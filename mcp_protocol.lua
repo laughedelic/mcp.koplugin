@@ -8,7 +8,7 @@ local rapidjson = require("rapidjson")
 local logger = require("logger")
 
 local MCPProtocol = {
-    version = "2024-11-05",  -- MCP protocol version
+    version = "2025-03-26",  -- MCP protocol version
     serverInfo = {
         name = "koreader-mcp",
         version = "1.0.0",
@@ -45,7 +45,16 @@ function MCPProtocol:handleRequest(request)
     -- Parse JSON-RPC request
     local ok, jsonRequest = pcall(rapidjson.decode, request.body)
     if not ok or not jsonRequest then
-        logger.warn("Invalid JSON in MCP request:", request.body)
+        -- Log detailed error information for debugging
+        local body_preview = request.body or "(empty)"
+        if #body_preview > 200 then
+            body_preview = body_preview:sub(1, 200) .. "... (truncated, total " .. #request.body .. " bytes)"
+        end
+        local error_msg = not ok and tostring(jsonRequest) or "JSON decoded to nil/false"
+        logger.warn("Invalid JSON in MCP request:")
+        logger.warn("  Error:", error_msg)
+        logger.warn("  Body:", body_preview)
+        logger.warn("  Content-Length:", request.headers and request.headers["content-length"] or "unknown")
         return self:createErrorResponse(nil, -32700, "Parse error")
     end
 

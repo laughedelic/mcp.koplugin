@@ -20,19 +20,78 @@ function MCPServer:new(o)
     return o
 end
 
-function MCPServer:start(port, onRequest)
-    if self.running then
+-- Force kill any process using the port
+function MCPServer:forceReleasePort(port)
+    logger.info("MCP: Attempting to release port", port)
+    -- Try to find and kill any process using this port
+    os.execute(string.format("fuser -k %d/tcp 2>/dev/null", port))
+    -- Give it a moment to release
+    socket.sleep(0.2)
+end
+
+-- Check if port is available
+function MCPServer:isPortAvailable(port)
+    local test = socket.tcp()
+    test:setoption("reuseaddr", true)
+    local ok = test:bind("0.0.0.0", port)
+    test:close()
+    return ok ~= nil
+end
+
+function MCPServer:start(port, onRequest, forceRestart)
+    if self.running and not forceRestart then
         logger.warn("MCP Server already running")
         return false
+    end
+
+    -- If force restart, stop existing server first
+    if self.running then
+        self:stop()
+        socket.sleep(0.1)
     end
 
     self.port = port or self.port
     self.onRequest = onRequest
 
-    -- Create and bind the server socket
-    local server, err = socket.bind("0.0.0.0", self.port)
+    -- Force release port if it might be stuck
+    if not self:isPortAvailable(self.port) then
+        logger.warn("MCP: Port", self.port, "appears to be in use, attempting to release")
+        self:forceReleasePort(self.port)
+    end
+
+    -- Create TCP socket
+    local server = socket.tcp()
     if not server then
+        logger.err("Failed to create TCP socket")
+        return false
+    end
+
+    -- Allow address reuse to avoid "address already in use" errors
+    server:setoption("reuseaddr", true)
+
+    -- Bind to all interfaces with retry logic
+    local ok, err
+    local retries = 3
+    for i = 1, retries do
+        ok, err = server:bind("0.0.0.0", self.port)
+        if ok then break end
+        logger.warn("MCP: Bind attempt", i, "failed:", err, "- retrying...")
+        server:close()
+        self:forceReleasePort(self.port)
+        server = socket.tcp()
+        server:setoption("reuseaddr", true)
+    end
+    if not ok then
         logger.err("Failed to bind MCP server to port", self.port, ":", err)
+        server:close()
+        return false
+    end
+
+    -- Start listening for connections (backlog of 5 pending connections)
+    ok, err = server:listen(5)
+    if not ok then
+        logger.err("Failed to listen on port", self.port, ":", err)
+        server:close()
         return false
     end
 
@@ -71,8 +130,8 @@ function MCPServer:pollOnce()
         return
     end
 
-    -- Set timeout for client operations
-    client:settimeout(0.2)
+    -- Set timeout for client operations (longer timeout for slow e-reader devices)
+    client:settimeout(5)
 
     -- Parse the HTTP request
     local request = self:parseRequest(client)
