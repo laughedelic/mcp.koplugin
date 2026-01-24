@@ -9,6 +9,7 @@ A KOReader plugin that implements a [Model Context Protocol (MCP)](https://model
 - **Interactive Tools**: Search within books, navigate to pages, get table of contents
 - **Real-time Communication**: MCP server runs directly on your e-reader device
 - **Secure Local Network**: Server binds to your local network only
+- **Cloud Relay**: Access your e-reader from anywhere via a cloud relay — no VPN or port forwarding needed
 - **Auto-start**: Optionally start the server automatically when KOReader launches
 - **Idle Timeout**: Automatically stop the server after a period of inactivity to save battery
 - **Power Management**: Option to turn off WiFi when idle timeout triggers
@@ -120,6 +121,7 @@ The plugin consists of several modular components:
 - **mcp_protocol.lua**: JSON-RPC 2.0 / MCP protocol handler
 - **mcp_resources.lua**: Resource implementations (book content, metadata)
 - **mcp_tools.lua**: Tool implementations (search, navigation, etc.)
+- **mcp_relay.lua**: Cloud relay client for remote access
 
 ## Configuration
 
@@ -129,8 +131,64 @@ The plugin supports the following configuration options (stored in KOReader's se
 - **Auto-start** (`mcp_server_autostart`): Start server automatically when KOReader launches (default: disabled)
 - **Idle timeout** (`mcp_server_idle_timeout_minutes`): Minutes of inactivity before stopping server (default: 0/disabled, range: 0-120)
 - **WiFi disable on timeout** (`mcp_server_idle_timeout_wifi_off`): Turn off WiFi when idle timeout triggers (default: disabled)
+- **Cloud relay auto-start** (`mcp_relay_autostart`): Automatically start cloud relay when server starts (default: disabled)
 
 These settings can be configured through the **Settings → Network → MCP server** menu.
+
+## Cloud Relay (Remote Access)
+
+The cloud relay feature allows you to access your MCP server from anywhere — Claude Desktop, Claude Mobile, or other AI tools — without complex network setup like VPNs or port forwarding.
+
+### How It Works
+
+```
+┌─────────────────┐    outbound     ┌─────────────┐    HTTPS    ┌───────────────┐
+│  E-Reader       │ ──────────────► │ Cloud Relay │ ◄────────── │ Claude/Client │
+│  (KOReader)     │ ◄────────────── │ (Cloudflare)│ ──────────► │               │
+└─────────────────┘                 └─────────────┘             └───────────────┘
+```
+
+1. Your e-reader connects to the cloud relay (outbound connection, no firewall issues)
+2. The relay assigns a unique URL for your device
+3. Claude Desktop or other MCP clients connect to that URL
+4. Requests are forwarded through the relay to your e-reader
+
+### Enabling Cloud Relay
+
+1. Start the MCP server as usual (Tools menu or Network settings)
+2. Go to **Settings → Network → MCP server → ☁ Cloud relay**
+3. Enable the cloud relay
+4. Wait for "connected" status
+5. Your relay URL will be shown (e.g., `https://mcp-relay.workers.dev/abc123xyz/mcp`)
+6. Add this URL to Claude Desktop or other MCP clients
+
+### Claude Desktop Configuration
+
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "koreader": {
+      "url": "https://mcp-relay.workers.dev/YOUR_DEVICE_ID/mcp"
+    }
+  }
+}
+```
+
+Replace `YOUR_DEVICE_ID` with the ID shown in your relay status.
+
+### Cloud Relay Settings
+
+- **Start relay with server**: Automatically enable cloud relay when MCP server starts
+- **Reset device ID**: Generate a new device ID (changes your relay URL)
+
+### Security
+
+- Your device ID acts as a secret token — don't share your relay URL publicly
+- All traffic is encrypted (HTTPS)
+- The relay doesn't store any book content, only forwards requests
+- You can reset your device ID anytime from the settings menu
 
 ## Limitations
 

@@ -19,6 +19,7 @@ local MCPServer = require("mcp_server")
 local MCPProtocol = require("mcp_protocol")
 local MCPResources = require("mcp_resources")
 local MCPTools = require("mcp_tools")
+local MCPRelay = require("mcp_relay")
 
 -- Module-level state to persist across plugin instance recreation
 -- (when switching between file browser and reader)
@@ -27,8 +28,13 @@ local shared_state = {
     protocol = nil,     -- shared protocol instance
     resources = nil,    -- shared resources instance
     tools = nil,        -- shared tools instance
+    relay = nil,        -- shared relay instance
     server_running = false,
+    relay_running = false,
+    relay_connected = false,
+    relay_url = nil,
     poll_task = nil,
+    relay_poll_task = nil,
     last_interaction_time = nil,  -- timestamp of last MCP interaction
     idle_check_task = nil,        -- scheduled idle check function
     idle_warning_widget = nil,    -- reference to the warning notification widget
@@ -42,6 +48,7 @@ local MCP = WidgetContainer:extend{
 -- Default settings
 local DEFAULT_IDLE_TIMEOUT_MINUTES = 0  -- 0 = disabled
 local IDLE_WARNING_SECONDS = 5  -- Show warning 5 seconds before stopping
+local DEFAULT_RELAY_URL = "https://mcp-relay.laughedelic.workers.dev"
 
 function MCP:init()
     logger.info("Initializing MCP Plugin instance")
@@ -53,10 +60,29 @@ function MCP:init()
         shared_state.protocol = MCPProtocol:new()
         shared_state.resources = MCPResources:new()
         shared_state.tools = MCPTools:new()
+        shared_state.relay = MCPRelay:new()
 
         -- Wire up components
         shared_state.protocol:setResources(shared_state.resources)
         shared_state.protocol:setTools(shared_state.tools)
+        
+        -- Configure relay
+        shared_state.relay:setRelayUrl(G_reader_settings:readSetting("mcp_relay_url", DEFAULT_RELAY_URL))
+        local saved_device_id = G_reader_settings:readSetting("mcp_relay_device_id")
+        if saved_device_id then
+            shared_state.relay:setDeviceId(saved_device_id)
+        end
+        shared_state.relay:setDeviceName(G_reader_settings:readSetting("mcp_relay_device_name", "KOReader"))
+        
+        -- Set up relay callbacks
+        shared_state.relay:setStatusCallback(function(connected, url)
+            shared_state.relay_connected = connected
+            shared_state.relay_url = url
+            if connected then
+                -- Save the device ID for reconnection
+                G_reader_settings:saveSetting("mcp_relay_device_id", shared_state.relay:getDeviceId())
+            end
+        end)
     end
 
     -- Always update UI reference when plugin instance is created
@@ -172,6 +198,76 @@ function MCP:addToMainMenu(menu_items)
                 end,
                 separator = true,
             },
+            -- Cloud Relay section
+            {
+                text_func = function()
+                    if shared_state.relay_connected then
+                        return _("☁ Cloud relay: connected")
+                    elseif shared_state.relay_running then
+                        return _("☁ Cloud relay: connecting...")
+                    else
+                        return _("☁ Cloud relay")
+                    end
+                end,
+                help_text = _("Enable cloud relay to access your MCP server from anywhere (Claude Desktop, Claude Mobile, etc.) without complex network setup."),
+                checked_func = function()
+                    return shared_state.relay_running
+                end,
+                callback = function(touchmenu_instance)
+                    if shared_state.relay_running then
+                        self:stopRelay()
+                    else
+                        self:startRelay()
+                    end
+                    if touchmenu_instance then
+                        touchmenu_instance:updateItems()
+                    end
+                end,
+                hold_callback = function()
+                    self:showRelayStatus()
+                end,
+            },
+            {
+                text = _("Copy relay URL"),
+                enabled_func = function()
+                    return shared_state.relay_connected and shared_state.relay_url
+                end,
+                callback = function()
+                    if shared_state.relay_url then
+                        -- KOReader doesn't have clipboard API, show URL instead
+                        UIManager:show(InfoMessage:new{
+                            text = _("Your MCP relay URL:\n\n") .. shared_state.relay_url .. _("\n\nAdd this URL to Claude Desktop or other MCP clients."),
+                            timeout = 10,
+                        })
+                    end
+                end,
+            },
+            {
+                text = _("Start relay with server"),
+                help_text = _("Automatically start the cloud relay when the MCP server starts."),
+                checked_func = function()
+                    return G_reader_settings:isTrue("mcp_relay_autostart")
+                end,
+                callback = function()
+                    G_reader_settings:flipNilOrFalse("mcp_relay_autostart")
+                end,
+            },
+            {
+                text = _("Reset device ID"),
+                help_text = _("Generate a new device ID. This will change your relay URL."),
+                enabled_func = function()
+                    return not shared_state.relay_running
+                end,
+                callback = function()
+                    G_reader_settings:delSetting("mcp_relay_device_id")
+                    shared_state.relay:setDeviceId(nil)
+                    UIManager:show(Notification:new{
+                        text = _("Device ID will be regenerated on next connect"),
+                        timeout = 3,
+                    })
+                end,
+                separator = true,
+            },
             {
                 text = _("About MCP server"),
                 keep_menu_open = true,
@@ -249,6 +345,11 @@ function MCP:startServer()
     })
 
     logger.info("MCP Server started on", ip .. ":" .. port)
+    
+    -- Auto-start relay if enabled
+    if G_reader_settings:isTrue("mcp_relay_autostart") and not shared_state.relay_running then
+        self:startRelay()
+    end
 end
 
 function MCP:stopServer()
@@ -270,7 +371,9 @@ function MCP:stopServer()
     shared_state.server:stop()
     shared_state.server_running = false
     shared_state.last_interaction_time = nil
-
+    
+    -- Note: Don't automatically stop relay - it can run independently
+    
     -- On Kindle devices, close firewall port
     local port = shared_state.server.port
     if Device:isKindle() then
@@ -307,6 +410,87 @@ function MCP:schedulePoll()
     end
 
     UIManager:scheduleIn(0.05, shared_state.poll_task)
+end
+
+-- Cloud Relay management
+function MCP:startRelay()
+    if shared_state.relay_running then
+        return
+    end
+    
+    -- The relay doesn't need the local HTTP server to be running
+    -- It forwards requests directly to the MCP protocol handler
+    
+    logger.info("MCP: Starting cloud relay")
+    
+    -- Set up the request handler to forward to the MCP protocol handler
+    shared_state.relay:setRequestHandler(function(request)
+        -- Update last interaction time (for idle timeout if server is also running)
+        if shared_state.server_running then
+            shared_state.last_interaction_time = os.time()
+            self:cancelIdleWarning()
+        end
+        return shared_state.protocol:handleRequest(request)
+    end)
+    
+    local success, device_id = shared_state.relay:start()
+    if success then
+        shared_state.relay_running = true
+        -- Relay now handles its own polling internally
+        
+        UIManager:show(Notification:new{
+            text = _("Cloud relay connecting..."),
+            timeout = 2,
+        })
+    else
+        UIManager:show(InfoMessage:new{
+            text = _("Failed to start cloud relay. Check network connection."),
+            timeout = 3,
+        })
+    end
+end
+
+function MCP:stopRelay()
+    if not shared_state.relay_running then
+        return
+    end
+    
+    logger.info("MCP: Stopping cloud relay")
+    
+    -- Stop polling
+    if shared_state.relay_poll_task then
+        UIManager:unschedule(shared_state.relay_poll_task)
+        shared_state.relay_poll_task = nil
+    end
+    
+    shared_state.relay:stop()
+    shared_state.relay_running = false
+    shared_state.relay_connected = false
+    shared_state.relay_url = nil
+    
+    UIManager:show(Notification:new{
+        text = _("Cloud relay stopped"),
+        timeout = 2,
+    })
+end
+
+function MCP:showRelayStatus()
+    local status_text
+    if shared_state.relay_connected and shared_state.relay_url then
+        status_text = _("Cloud Relay: Connected\n\n") ..
+                     _("Your MCP URL:\n") .. shared_state.relay_url ..
+                     _("\n\nDevice ID: ") .. (shared_state.relay:getDeviceId() or "unknown") ..
+                     _("\n\nUse this URL in Claude Desktop or other MCP clients to access your e-reader from anywhere.")
+    elseif shared_state.relay_running then
+        status_text = _("Cloud Relay: Connecting...\n\nDevice ID: ") .. (shared_state.relay:getDeviceId() or "generating...")
+    else
+        status_text = _("Cloud Relay: Not running\n\nEnable the cloud relay to access your MCP server from anywhere without complex network setup.")
+    end
+    
+    UIManager:show(InfoMessage:new{
+        text = status_text,
+        timeout = 8,
+    })
 end
 
 -- Idle timeout management
