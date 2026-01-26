@@ -29,20 +29,19 @@ function MCPTools:list()
     -- Get text from page range
     table.insert(tools, {
         name = "get_page_text",
-        description = "Get text content from a specific page or range of pages",
+        description = "Get text content from a specific page or range of pages. If no page is specified, returns the current page's text.",
         inputSchema = {
             type = "object",
             properties = {
                 start_page = {
                     type = "number",
-                    description = "Starting page number (1-indexed)",
+                    description = "Starting page number (1-indexed). Defaults to current page if omitted.",
                 },
                 end_page = {
                     type = "number",
                     description = "Ending page number (optional, defaults to start_page)",
                 },
             },
-            required = { "start_page" },
         },
     })
 
@@ -175,17 +174,9 @@ end
 
 function MCPTools:getPageText(args)
     local doc = self.ui.document
-    local startPage = tonumber(args.start_page)
+    -- Default to current page if start_page is not provided
+    local startPage = tonumber(args.start_page) or doc:getCurrentPage()
     local endPage = tonumber(args.end_page) or startPage
-
-    if not startPage then
-        return {
-            content = {
-                { type = "text", text = "Error: Invalid start_page" },
-            },
-            isError = true,
-        }
-    end
 
     local pageCount = doc:getPageCount()
     startPage = math.max(1, math.min(startPage, pageCount))
