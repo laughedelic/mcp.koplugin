@@ -2,6 +2,12 @@
 
 A KOReader plugin that implements a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server, enabling AI assistants to interact with your e-books in real-time.
 
+<details><summary>What is MCP?</summary>
+
+The Model Context Protocol (MCP) is an open standard that enables AI assistants to securely connect to external data sources and tools. This plugin implements an MCP server that exposes your KOReader book content and functionality to compatible AI assistants.
+
+</details>
+
 ## Features
 
 - **Book Content Access**: AI assistants can read your current book's content at different scopes (current page, chapter, specific page ranges)
@@ -10,11 +16,27 @@ A KOReader plugin that implements a [Model Context Protocol (MCP)](https://model
 - **Secure Local Network**: Server binds to your local network only
 - **Cloud Relay**: Access your e-reader from anywhere via a cloud relay
 
-## What is MCP?
+### Why not just use the [KOAssistant plugin](https://github.com/zeeyado/koassistant.koplugin)?
 
-The Model Context Protocol (MCP) is an open standard that enables AI assistants to securely connect to external data sources and tools. This plugin implements an MCP server that exposes your KOReader book content and functionality to compatible AI assistants.
+It's a great plugin and I recommend trying it out! I personally use _both_. 
+
+- KOAssistant uses an API and requires setting up access keys (not a problem, but a bit more technical setup)
+- It's very convenient for quick interaction _on-device_: e.g. translating or explaining selected text
+- It's not great for longer interactions that require _typing_ which is usually a _pain on e-readers_
+- While KOAssistant chats can be saved, they will not appear in your main AI assistant app's chat history (which _may_ be desired because of the memories that your AI assistant builds over time)
+
+### Where does KOReader MCP shine?
+
+- You are reading a book and want to have a full conversation about it with your AI assistant (e.g., Claude, ChatGPT, DeepSeek or even local LLMs)
+- It can be especially useful when studying or reading on complex topics (research, philosophy, technical books), where you want to discuss ideas and brainstorm
+- You can open a chat on your phone or computer, and talk to the AI about your current reading context without finicky interactions on the slow e-reader screen
+- The chat _history_ and _memories_ are stored in your AI assistant app, keeping everything in one place and allowing for richer interactions over time (e.g. making connections between conversations or even different books)
+  - Note: this is optional and is totally up to you how you want to use it
 
 ## Installation
+
+> [!IMPORTANT]
+> This is an early implementation. Use it at your own risk. I make **NO GUARANTEES** about stability, security, or data integrity. You're welcome to review the code and suggest improvements.
 
 ### Via an app store plugin (recommended)
 
