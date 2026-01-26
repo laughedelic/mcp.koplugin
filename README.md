@@ -80,9 +80,9 @@ To update, repeat the steps above with the latest version.
 
 Check the **MCP server status** in the Tools menu for the MCP server address. Use this address to configure your AI assistant or MCP client (e.g., Claude Desktop, Claude Mobile).
 
-#### Claude Desktop (Example)
+#### Claude
 
-1. Go to **Settings → Connectors → Add custom connector**
+1. Go to **Settings → Connectors → Add custom connector**, or just us this link: https://claude.ai/settings/connectors?modal=add-custom-connector.
 2. Enter the name (e.g., "KOReader") and the MCP server URL.
 3. Open a new chat and in the ➕ menu you should see the new connector available. You can either add resources to the context, or ask it to use tools to fetch data from your book.
 
