@@ -201,6 +201,9 @@ The relay implementation will be shared and you can deploy your own instance if 
 - The relay doesn't store any book content, only forwards requests
 - You can reset your device ID anytime from the settings menu
 
+> [!WARNING]
+> Current implementation does not implement SSL certificate verification for the relay server 
+
 ## References
 
 - Built for [KOReader](https://github.com/koreader/koreader)
