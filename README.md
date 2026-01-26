@@ -201,23 +201,6 @@ The relay implementation will be shared and you can deploy your own instance if 
 - The relay doesn't store any book content, only forwards requests
 - You can reset your device ID anytime from the settings menu
 
-1. Your e-reader connects to the cloud relay
-2. The relay assigns a _unique URL_ for your device (with a random device ID)
-3. You use that URL to connect your AI chat app
-4. Requests are forwarded through the relay to your e-reader
-
-> [!IMPORTANT]
-> The relay is just a bridge forwarding requests between your e-reader and AI clients. It does not store any book content or personal data.
-
-The relay implementation will be shared and you can deploy your own instance if desired. For now, the plugin uses a public relay hosted on Cloudflare Workers.
-
-#### Security
-
-- Your device ID acts as a secret token — don't share your relay URL publicly
-- All traffic is encrypted (HTTPS)
-- The relay doesn't store any book content, only forwards requests
-- You can reset your device ID anytime from the settings menu
-
 ## References
 
 - Built for [KOReader](https://github.com/koreader/koreader)
