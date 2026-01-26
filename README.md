@@ -190,9 +190,9 @@ sequenceDiagram
 ```
 
 > [!IMPORTANT]
-> The relay is just a bridge forwarding requests between your e-reader and AI clients. It does not store any book content or personal data.
+> The relay is just a bridge forwarding requests between your e-reader and AI clients. It does not store any book content or personal data. Request logs might be kept temporarily for debugging, but no content is stored long-term.
 
-The relay implementation will be shared and you can deploy your own instance if desired. For now, the plugin uses a public relay hosted on Cloudflare Workers.
+The relay implementation is open source: [koreader-mcp-cloud-relay](https://github.com/laughedelic/koreader-mcp-cloud-relay). You can deploy your own instance for full control. By default, plugin uses the relay I deployed for myself. I'll be sharing it as long as it's within the free tier limits.
 
 #### Security
 
