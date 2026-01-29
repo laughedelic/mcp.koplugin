@@ -124,15 +124,15 @@ function MCPTools:list()
                 },
                 text = {
                     type = "string",
-                    description = "Optional: The text to highlight. If omitted, uses the currently selected text in the UI.",
+                    description = "Optional: The text to highlight. If provided, pos0 and pos1 must also be provided. If all are omitted, uses the currently selected text in the UI.",
                 },
                 pos0 = {
                     type = "string",
-                    description = "Optional: Start position (XPointer) of the text. Required if 'text' is provided and differs from current selection.",
+                    description = "Optional: Start position (XPointer) of the text. Required if 'text' is provided.",
                 },
                 pos1 = {
                     type = "string",
-                    description = "Optional: End position (XPointer) of the text. Required if 'text' is provided and differs from current selection.",
+                    description = "Optional: End position (XPointer) of the text. Required if 'text' is provided.",
                 },
             },
         },
@@ -407,20 +407,14 @@ function MCPTools:getSelection(args)
         local selected = self.ui.highlight.selected_text
         local text = selected.text
         if text and text ~= "" then
-            -- Build a detailed response with location information
-            local info = {
-                text = text,
-                pos0 = selected.pos0,
-                pos1 = selected.pos1,
-                page = selected.page,
-                chapter = selected.chapter,
-            }
-            
             local response = "Selected text:\n\n" .. text
             
-            -- Add location details if available
-            if selected.pos0 or selected.pos1 then
-                response = response .. "\n\nLocation information available for adding notes/highlights."
+            -- Add location details if available for use with add_note tool
+            if selected.pos0 and selected.pos1 then
+                response = response .. "\n\nLocation: pos0=" .. tostring(selected.pos0) .. ", pos1=" .. tostring(selected.pos1)
+                if selected.chapter then
+                    response = response .. "\nChapter: " .. selected.chapter
+                end
             end
             
             return {
@@ -430,8 +424,6 @@ function MCPTools:getSelection(args)
                         text = response,
                     },
                 },
-                -- Store location info in a way that can be accessed if needed
-                _meta = info,
             }
         end
     end
@@ -494,6 +486,16 @@ function MCPTools:addNote(args)
     -- Determine what to highlight
     local text_to_highlight, start_pos, end_pos
     
+    -- If text is provided, positions must also be provided
+    if provided_text and (not pos0 or not pos1) then
+        return {
+            content = {
+                { type = "text", text = "Error: When 'text' is provided, both 'pos0' and 'pos1' must also be provided" },
+            },
+            isError = true,
+        }
+    end
+    
     if provided_text and pos0 and pos1 then
         -- Use provided text and positions
         text_to_highlight = provided_text
@@ -523,21 +525,15 @@ function MCPTools:addNote(args)
         }
     end
     
+    local doc = self.ui.document
+    
     -- Get chapter information if available
     local chapter = nil
     if selected and selected.chapter then
         chapter = selected.chapter
     elseif self.ui.toc and self.ui.toc.getTocTitleByPage then
-        local doc = self.ui.document
         local current_page = doc:getCurrentPage()
         chapter = self.ui.toc:getTocTitleByPage(current_page)
-    end
-    
-    -- Get current page for the bookmark
-    local doc = self.ui.document
-    local page = doc:getCurrentPage()
-    if selected and selected.page then
-        page = selected.page
     end
     
     -- Create the bookmark/highlight entry
@@ -571,6 +567,38 @@ function MCPTools:addNote(args)
     
     -- Get existing bookmarks
     local bookmarks = doc_settings:readSetting("bookmarks") or {}
+    
+    -- Check for duplicates (same pos0 and pos1)
+    local duplicate_found = false
+    for _, existing in ipairs(bookmarks) do
+        if existing.pos0 == start_pos and existing.pos1 == end_pos then
+            duplicate_found = true
+            -- If a note is provided and different from existing, update it
+            if note_text and note_text ~= "" and existing.notes ~= note_text then
+                existing.notes = note_text
+                existing.datetime = datetime
+                doc_settings:saveSetting("bookmarks", bookmarks)
+                doc_settings:flush()
+                
+                -- Notify the UI to refresh if possible
+                if self.ui.bookmark then
+                    self.ui.bookmark:onReload()
+                end
+                
+                return {
+                    content = {
+                        { type = "text", text = "Successfully updated note on existing highlight:\n\nText: " .. text_to_highlight .. "\n\nNote: " .. note_text },
+                    },
+                }
+            else
+                return {
+                    content = {
+                        { type = "text", text = "A highlight already exists at this location" },
+                    },
+                }
+            end
+        end
+    end
     
     -- Add the new bookmark
     table.insert(bookmarks, bookmark)
