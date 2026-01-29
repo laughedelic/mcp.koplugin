@@ -413,7 +413,7 @@ function MCPTools:getSelection(args)
             if selected.pos0 and selected.pos1 then
                 response = response .. "\n\nLocation: pos0=" .. tostring(selected.pos0) .. ", pos1=" .. tostring(selected.pos1)
                 if selected.chapter then
-                    response = response .. "\nChapter: " .. selected.chapter
+                    response = response .. "\nChapter: " .. tostring(selected.chapter)
                 end
             end
             
@@ -502,7 +502,15 @@ function MCPTools:addNote(args)
         start_pos = pos0
         end_pos = pos1
     elseif selected and selected.text and selected.text ~= "" then
-        -- Use current selection
+        -- Use current selection - validate it has position data
+        if not selected.pos0 or not selected.pos1 then
+            return {
+                content = {
+                    { type = "text", text = "Error: Current selection is missing position information (pos0/pos1). Cannot add highlight without location data." },
+                },
+                isError = true,
+            }
+        end
         text_to_highlight = selected.text
         start_pos = selected.pos0
         end_pos = selected.pos1
@@ -515,19 +523,10 @@ function MCPTools:addNote(args)
         }
     end
     
-    -- Validate we have the necessary position information
-    if not start_pos or not end_pos then
-        return {
-            content = {
-                { type = "text", text = "Error: Missing position information (pos0/pos1). Cannot add highlight without location data." },
-            },
-            isError = true,
-        }
-    end
-    
     local doc = self.ui.document
     
     -- Get chapter information if available
+    -- Prefer chapter from selection if available, otherwise try to get from TOC
     local chapter = nil
     if selected and selected.chapter then
         chapter = selected.chapter
@@ -569,10 +568,8 @@ function MCPTools:addNote(args)
     local bookmarks = doc_settings:readSetting("bookmarks") or {}
     
     -- Check for duplicates (same pos0 and pos1)
-    local duplicate_found = false
     for _, existing in ipairs(bookmarks) do
         if existing.pos0 == start_pos and existing.pos1 == end_pos then
-            duplicate_found = true
             -- If a note is provided and different from existing, update it
             if note_text and note_text ~= "" and existing.notes ~= note_text then
                 existing.notes = note_text
@@ -591,6 +588,7 @@ function MCPTools:addNote(args)
                     },
                 }
             else
+                -- Highlight already exists with same or no note
                 return {
                     content = {
                         { type = "text", text = "A highlight already exists at this location" },
