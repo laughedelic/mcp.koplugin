@@ -472,6 +472,8 @@ function MCPTools:addNote(args)
     -- If note is provided, it creates a highlight with a note
     -- If note is omitted, it creates just a highlight
     
+    local Event = require("ui/event")
+    
     local note_text = args.note
     local provided_text = args.text
     local pos0 = args.pos0
@@ -531,56 +533,46 @@ function MCPTools:addNote(args)
     if selected and selected.chapter then
         chapter = selected.chapter
     elseif self.ui.toc and self.ui.toc.getTocTitleByPage then
-        local current_page = doc:getCurrentPage()
-        chapter = self.ui.toc:getTocTitleByPage(current_page)
+        local pg_or_xp = self.ui.paging and doc:getCurrentPage() or start_pos
+        chapter = self.ui.toc:getTocTitleByPage(pg_or_xp)
+    end
+    if chapter == "" then
+        chapter = nil
     end
     
-    -- Create the bookmark/highlight entry
-    local datetime = os.date("%Y-%m-%d %H:%M:%S")
-    local bookmark = {
-        page = start_pos,  -- Use XPointer as page reference
-        pos0 = start_pos,
-        pos1 = end_pos,
-        datetime = datetime,
-        chapter = chapter,
-        highlighted = true,
-        text = text_to_highlight,
-    }
-    
-    -- Add note if provided
-    if note_text and note_text ~= "" then
-        bookmark.notes = note_text
-    end
-    
-    -- Save the bookmark using ReaderUI's bookmark functionality
-    local DocSettings = require("docsettings")
-    local doc_settings = DocSettings:open(doc.file)
-    if not doc_settings then
+    -- Check if annotation module is available (modern KOReader)
+    if not self.ui.annotation then
         return {
             content = {
-                { type = "text", text = "Error: Could not open document settings" },
+                { type = "text", text = "Error: Annotation module not available" },
             },
             isError = true,
         }
     end
     
-    -- Get existing bookmarks
-    local bookmarks = doc_settings:readSetting("bookmarks") or {}
-    
-    -- Check for duplicates (same pos0 and pos1)
-    for _, existing in ipairs(bookmarks) do
-        if existing.pos0 == start_pos and existing.pos1 == end_pos then
+    -- Check for duplicates using the annotation module's match function
+    local annotations = self.ui.annotation.annotations or {}
+    for i, existing in ipairs(annotations) do
+        local matches = false
+        if self.ui.rolling then
+            -- For rolling documents, compare xpointers
+            matches = existing.pos0 == start_pos and existing.pos1 == end_pos
+        else
+            -- For paging documents, compare position tables
+            matches = existing.page == (self.ui.paging and start_pos.page or start_pos)
+                and existing.pos0 and start_pos
+                and existing.pos0.x == start_pos.x and existing.pos0.y == start_pos.y
+                and existing.pos1 and end_pos
+                and existing.pos1.x == end_pos.x and existing.pos1.y == end_pos.y
+        end
+        
+        if matches then
             -- If a note is provided and different from existing, update it
-            if note_text and note_text ~= "" and existing.notes ~= note_text then
-                existing.notes = note_text
-                existing.datetime = datetime
-                doc_settings:saveSetting("bookmarks", bookmarks)
-                doc_settings:flush()
-                
-                -- Notify the UI to refresh if possible
-                if self.ui.bookmark then
-                    self.ui.bookmark:onReload()
-                end
+            if note_text and note_text ~= "" and existing.note ~= note_text then
+                existing.note = note_text
+                existing.datetime_updated = os.date("%Y-%m-%d %H:%M:%S")
+                -- Notify the UI about the modification
+                self.ui:handleEvent(Event:new("AnnotationsModified", { existing }))
                 
                 return {
                     content = {
@@ -598,17 +590,36 @@ function MCPTools:addNote(args)
         end
     end
     
-    -- Add the new bookmark
-    table.insert(bookmarks, bookmark)
+    -- Create the annotation item (modern format)
+    local pg_or_xp = self.ui.paging and start_pos.page or start_pos
+    local item = {
+        page = pg_or_xp,
+        pos0 = start_pos,
+        pos1 = end_pos,
+        text = text_to_highlight,
+        chapter = chapter,
+        drawer = self.ui.highlight and self.ui.highlight.view and self.ui.highlight.view.highlight
+            and self.ui.highlight.view.highlight.saved_drawer or "lighten",
+        color = self.ui.highlight and self.ui.highlight.view and self.ui.highlight.view.highlight
+            and self.ui.highlight.view.highlight.saved_color or "yellow",
+    }
     
-    -- Save back to settings
-    doc_settings:saveSetting("bookmarks", bookmarks)
-    doc_settings:flush()
-    
-    -- Notify the UI to refresh if possible
-    if self.ui.bookmark then
-        self.ui.bookmark:onReload()
+    -- Add note if provided
+    if note_text and note_text ~= "" then
+        item.note = note_text
     end
+    
+    -- Add the annotation using the modern API
+    local index = self.ui.annotation:addItem(item)
+    
+    -- Notify the UI about the new annotation
+    local event_data = { item, index_modified = index }
+    if note_text and note_text ~= "" then
+        event_data.nb_notes_added = 1
+    else
+        event_data.nb_highlights_added = 1
+    end
+    self.ui:handleEvent(Event:new("AnnotationsModified", event_data))
     
     -- Build response message
     local response
