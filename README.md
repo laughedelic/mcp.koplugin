@@ -94,8 +94,10 @@ Once connected, you can ask your AI assistant questions like:
 - "Summarize the current chapter"
 - "What does the quote on this page mean?"
 - "Search for other mentions of [character/topic] on this page and explain their significance"
+- "Add a note with a translation of this selected text"
+- "Highlight this important passage"
 
-Assistant will use the MCP resources and tools to understand which book you're reading, what's on your screen, search within the book, and provide relevant responses.
+Assistant will use the MCP resources and tools to understand which book you're reading, what's on your screen, search within the book, and provide relevant responses. You can also ask the assistant to add highlights and notes to your book based on your conversation.
 
 > [!TIP]
 > It might be helpful to create a separate project with more focused instructions for using KOReader MCP or even for a particular book that you want to discuss with your AI assistant. This will keep the context relevant and maintain separate memory for different books or topics.
@@ -121,14 +123,15 @@ The plugin exposes these resources:
 
 The plugin provides these callable tools:
 
-| Tool            | Description                    | Parameters                           |
-| --------------- | ------------------------------ | ------------------------------------ |
-| `get_page_text` | Get text from specific page(s) | `start_page`, `end_page` (optional)  |
-| `search_book`   | Search for text in the book    | `query`, `case_sensitive` (optional) |
-| `get_toc`       | Get table of contents          | None                                 |
-| `goto_page`     | Navigate to a specific page    | `page`                               |
-| `get_selection` | Get currently selected text    | None                                 |
-| `get_book_info` | Get detailed book information  | None                                 |
+| Tool            | Description                                                                       | Parameters                                                           |
+| --------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `get_page_text` | Get text from specific page(s)                                                    | `start_page`, `end_page` (optional)                                  |
+| `search_book`   | Search for text in the book                                                       | `query`, `case_sensitive` (optional)                                 |
+| `get_toc`       | Get table of contents                                                             | None                                                                 |
+| `goto_page`     | Navigate to a specific page                                                       | `page`                                                               |
+| `get_selection` | Get currently selected text with location info                                    | None                                                                 |
+| `get_book_info` | Get detailed book information                                                     | None                                                                 |
+| `add_note`      | Add highlight or note to selected text (highlight only if `note` arg is omitted) | `note` (optional), `text` (optional), `pos0` (optional), `pos1` (optional) |
 
 
 ## Local & Remote Modes
