@@ -111,6 +111,33 @@ function MCPTools:list()
         },
     })
 
+    -- Add note or highlight to text
+    table.insert(tools, {
+        name = "add_note",
+        description = "Add a highlight or note to selected text. Creates a highlight when note is omitted, or adds a note to the highlight when provided. If no text/location is provided, uses the currently selected text in the UI.",
+        inputSchema = {
+            type = "object",
+            properties = {
+                note = {
+                    type = "string",
+                    description = "Optional note text to attach to the highlight. If omitted, only a highlight is created.",
+                },
+                text = {
+                    type = "string",
+                    description = "Optional: The text to highlight. If omitted, uses the currently selected text in the UI.",
+                },
+                pos0 = {
+                    type = "string",
+                    description = "Optional: Start position (XPointer) of the text. Required if 'text' is provided and differs from current selection.",
+                },
+                pos1 = {
+                    type = "string",
+                    description = "Optional: End position (XPointer) of the text. Required if 'text' is provided and differs from current selection.",
+                },
+            },
+        },
+    })
+
     return tools
 end
 
@@ -140,6 +167,8 @@ function MCPTools:call(name, arguments)
         return self:getSelection(arguments)
     elseif name == "get_book_info" then
         return self:getBookInfo(arguments)
+    elseif name == "add_note" then
+        return self:addNote(arguments)
     else
         return nil  -- Tool not found
     end
@@ -375,12 +404,34 @@ end
 function MCPTools:getSelection(args)
     -- Try to get current selection from highlight module
     if self.ui.highlight and self.ui.highlight.selected_text then
-        local text = self.ui.highlight.selected_text.text
+        local selected = self.ui.highlight.selected_text
+        local text = selected.text
         if text and text ~= "" then
+            -- Build a detailed response with location information
+            local info = {
+                text = text,
+                pos0 = selected.pos0,
+                pos1 = selected.pos1,
+                page = selected.page,
+                chapter = selected.chapter,
+            }
+            
+            local response = "Selected text:\n\n" .. text
+            
+            -- Add location details if available
+            if selected.pos0 or selected.pos1 then
+                response = response .. "\n\nLocation information available for adding notes/highlights."
+            end
+            
             return {
                 content = {
-                    { type = "text", text = "Selected text:\n\n" .. text },
+                    { 
+                        type = "text", 
+                        text = response,
+                    },
                 },
+                -- Store location info in a way that can be accessed if needed
+                _meta = info,
             }
         end
     end
@@ -420,6 +471,130 @@ function MCPTools:getBookInfo(args)
     return {
         content = {
             { type = "text", text = infoText },
+        },
+    }
+end
+
+function MCPTools:addNote(args)
+    -- This function adds a highlight or note to text
+    -- If note is provided, it creates a highlight with a note
+    -- If note is omitted, it creates just a highlight
+    
+    local note_text = args.note
+    local provided_text = args.text
+    local pos0 = args.pos0
+    local pos1 = args.pos1
+    
+    -- Get current selection if no text/positions provided
+    local selected = nil
+    if self.ui.highlight and self.ui.highlight.selected_text then
+        selected = self.ui.highlight.selected_text
+    end
+    
+    -- Determine what to highlight
+    local text_to_highlight, start_pos, end_pos
+    
+    if provided_text and pos0 and pos1 then
+        -- Use provided text and positions
+        text_to_highlight = provided_text
+        start_pos = pos0
+        end_pos = pos1
+    elseif selected and selected.text and selected.text ~= "" then
+        -- Use current selection
+        text_to_highlight = selected.text
+        start_pos = selected.pos0
+        end_pos = selected.pos1
+    else
+        return {
+            content = {
+                { type = "text", text = "Error: No text selected and no text/position information provided" },
+            },
+            isError = true,
+        }
+    end
+    
+    -- Validate we have the necessary position information
+    if not start_pos or not end_pos then
+        return {
+            content = {
+                { type = "text", text = "Error: Missing position information (pos0/pos1). Cannot add highlight without location data." },
+            },
+            isError = true,
+        }
+    end
+    
+    -- Get chapter information if available
+    local chapter = nil
+    if selected and selected.chapter then
+        chapter = selected.chapter
+    elseif self.ui.toc and self.ui.toc.getTocTitleByPage then
+        local doc = self.ui.document
+        local current_page = doc:getCurrentPage()
+        chapter = self.ui.toc:getTocTitleByPage(current_page)
+    end
+    
+    -- Get current page for the bookmark
+    local doc = self.ui.document
+    local page = doc:getCurrentPage()
+    if selected and selected.page then
+        page = selected.page
+    end
+    
+    -- Create the bookmark/highlight entry
+    local datetime = os.date("%Y-%m-%d %H:%M:%S")
+    local bookmark = {
+        page = start_pos,  -- Use XPointer as page reference
+        pos0 = start_pos,
+        pos1 = end_pos,
+        datetime = datetime,
+        chapter = chapter,
+        highlighted = true,
+        text = text_to_highlight,
+    }
+    
+    -- Add note if provided
+    if note_text and note_text ~= "" then
+        bookmark.notes = note_text
+    end
+    
+    -- Save the bookmark using ReaderUI's bookmark functionality
+    local DocSettings = require("docsettings")
+    local doc_settings = DocSettings:open(doc.file)
+    if not doc_settings then
+        return {
+            content = {
+                { type = "text", text = "Error: Could not open document settings" },
+            },
+            isError = true,
+        }
+    end
+    
+    -- Get existing bookmarks
+    local bookmarks = doc_settings:readSetting("bookmarks") or {}
+    
+    -- Add the new bookmark
+    table.insert(bookmarks, bookmark)
+    
+    -- Save back to settings
+    doc_settings:saveSetting("bookmarks", bookmarks)
+    doc_settings:flush()
+    
+    -- Notify the UI to refresh if possible
+    if self.ui.bookmark then
+        self.ui.bookmark:onReload()
+    end
+    
+    -- Build response message
+    local response
+    if note_text and note_text ~= "" then
+        response = "Successfully added note to highlight:\n\nText: " .. text_to_highlight .. "\n\nNote: " .. note_text
+    else
+        response = "Successfully added highlight:\n\n" .. text_to_highlight
+    end
+    
+    return {
+        content = {
+            { type = "text", text = response },
         },
     }
 end
