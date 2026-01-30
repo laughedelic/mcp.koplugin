@@ -12,6 +12,69 @@ local MCPTools = {
     ui = nil,
 }
 
+-- Fuzzy text matching using regex
+-- This helps match text when LLMs replace typographic characters with ASCII equivalents
+-- e.g., smart quotes (') vs straight quotes ('), em-dashes (—) vs hyphens (-)
+--
+-- Simple approach: replace punctuation and non-ASCII characters with regex wildcard (.)
+-- This is intentionally loose - better to get multiple matches and pick the best one
+-- than to miss the right match due to character encoding differences.
+
+-- ASCII punctuation that should be replaced with wildcards
+-- These have typographic equivalents that LLMs often swap
+local WILDCARD_PUNCTUATION = {
+    ["'"] = true, -- straight single quote (has smart quote equivalents)
+    ['"'] = true, -- straight double quote (has smart quote equivalents)
+    ["-"] = true, -- hyphen-minus (has en-dash, em-dash equivalents)
+}
+
+-- Characters that need regex escaping (ECMAScript regex special chars)
+local REGEX_SPECIAL_CHARS = "[\\^$.*+?()%[%]{}|]"
+
+-- Convert a plain text query to a fuzzy regex pattern
+-- Replaces punctuation and non-ASCII characters with "." wildcard
+local function textToFuzzyRegex(text)
+    if not text then return nil end
+
+    local result = ""
+    local i = 1
+    local len = #text
+
+    while i <= len do
+        local byte = string.byte(text, i)
+
+        if byte < 128 then
+            -- ASCII character
+            local char = text:sub(i, i)
+            if WILDCARD_PUNCTUATION[char] then
+                -- Replace with wildcard
+                result = result .. "."
+            elseif char:match(REGEX_SPECIAL_CHARS) then
+                -- Escape regex special char
+                result = result .. "\\" .. char
+            else
+                result = result .. char
+            end
+            i = i + 1
+        else
+            -- Non-ASCII (UTF-8 multi-byte) - replace with wildcard
+            -- Skip all continuation bytes (10xxxxxx pattern)
+            local charLen = 1
+            if byte >= 0xC0 and byte < 0xE0 then
+                charLen = 2
+            elseif byte >= 0xE0 and byte < 0xF0 then
+                charLen = 3
+            elseif byte >= 0xF0 then
+                charLen = 4
+            end
+            result = result .. "."
+            i = i + charLen
+        end
+    end
+
+    return result
+end
+
 function MCPTools:new(o)
     o = o or {}
     setmetatable(o, self)
@@ -29,7 +92,8 @@ function MCPTools:list()
     -- Get text from page range
     table.insert(tools, {
         name = "get_page_text",
-        description = "Get text content from a specific page or range of pages. If no page is specified, returns the current page's text.",
+        description =
+        "Get text content from a specific page or range of pages. If no page is specified, returns the current page's text.",
         inputSchema = {
             type = "object",
             properties = {
@@ -114,17 +178,20 @@ function MCPTools:list()
     -- Add note or highlight to text
     table.insert(tools, {
         name = "annotate",
-        description = "Add a highlight or note to text. Creates a highlight when note is omitted. Behavior depends on inputs: (1) No text/positions: uses the current UI selection (fails if none). (2) Only start/end positions: annotates that location (e.g. positions from get_selection). (3) Only text: searches for the text in the book to find its position automatically.",
+        description =
+        "Add a highlight or note to text. Creates a highlight when note is omitted. Behavior depends on inputs: (1) No text/positions: uses the current UI selection (fails if none). (2) Only start/end positions: annotates that location (e.g. positions from get_selection). (3) Only text: searches for the text in the book to find its position automatically.",
         inputSchema = {
             type = "object",
             properties = {
                 note = {
                     type = "string",
-                    description = "Optional note text to attach to the highlight. If omitted, only a highlight is created.",
+                    description =
+                    "Optional note text to attach to the highlight. If omitted, only a highlight is created.",
                 },
                 text = {
                     type = "string",
-                    description = "Optional: The exact text to highlight. If provided without positions, the text will be searched in the book to find its location.",
+                    description =
+                    "Optional: The exact text to highlight. If provided without positions, the text will be searched in the book to find its location.",
                 },
                 start = {
                     type = "string",
@@ -170,14 +237,14 @@ function MCPTools:call(name, arguments)
     elseif name == "annotate" then
         return self:annotate(arguments)
     else
-        return nil  -- Tool not found
+        return nil -- Tool not found
     end
 end
 
 -- Helper function to extract text from text boxes structure
 local function extractTextFromBoxes(textBoxes)
     if not textBoxes then return nil end
-    
+
     local lines = {}
     for _, line in ipairs(textBoxes) do
         local words = {}
@@ -194,7 +261,7 @@ local function extractTextFromBoxes(textBoxes)
             table.insert(lines, table.concat(words, " "))
         end
     end
-    
+
     if #lines > 0 then
         return table.concat(lines, "\n")
     end
@@ -219,12 +286,12 @@ function MCPTools:getPageText(args)
     local text = ""
     local hasText = false
     local locationInfo = nil
-    
+
     for page = startPage, endPage do
         local pageText = nil
         local pageStartXP = nil
         local pageEndXP = nil
-        
+
         -- For reflowable documents (EPUB, etc.), try getTextFromXPointers first
         -- This is the most reliable method for CRE documents
         if not pageText and doc.getPageXPointer and doc.getTextFromXPointers then
@@ -247,18 +314,18 @@ function MCPTools:getPageText(args)
                 end
             end
         end
-        
+
         -- For paged documents (PDF, DjVu), try getPageTextBoxes
         if not pageText and doc.getPageTextBoxes then
             local textBoxes = doc:getPageTextBoxes(page)
             pageText = extractTextFromBoxes(textBoxes)
         end
-        
+
         -- Fallback: try the generic getPageText if available
         if not pageText and doc.getPageText then
             pageText = doc:getPageText(page)
         end
-        
+
         if pageText and pageText ~= "" then
             hasText = true
             text = text .. "=== Page " .. page .. " ===\n" .. pageText .. "\n"
@@ -275,7 +342,7 @@ function MCPTools:getPageText(args)
             text = text .. "=== Page " .. page .. " ===\n(No text available)\n\n"
         end
     end
-    
+
     if not hasText then
         text = "Text extraction not available for this document type or no text found in the specified pages."
     end
@@ -304,13 +371,18 @@ function MCPTools:searchBook(args)
     -- Use KOReader's native findAllText for fulltext search
     -- This is the same method used by the built-in "Fulltext search" feature
     if doc.findAllText then
-        local nb_context_words = 5  -- words before/after match for context
-        local max_hits = 100        -- limit results
+        local nb_context_words = 5 -- words before/after match for context
+        local max_hits = 100       -- limit results
         local case_insensitive = not caseSensitive
-        local use_regex = false
-        
-        local results = doc:findAllText(query, case_insensitive, nb_context_words, max_hits, use_regex)
-        
+
+        -- Convert query to a fuzzy regex pattern that matches both ASCII and typographic variants
+        -- This handles cases where LLMs replace smart quotes with straight quotes or vice versa
+        local fuzzyPattern = textToFuzzyRegex(query)
+        local use_regex = true
+
+        logger.dbg("MCP search: Using fuzzy regex pattern:", fuzzyPattern)
+        local results = doc:findAllText(fuzzyPattern, case_insensitive, nb_context_words, max_hits, use_regex)
+
         if results and #results > 0 then
             local resultText = "Found " .. #results .. " results:\n\n"
             for i, item in ipairs(results) do
@@ -321,7 +393,7 @@ function MCPTools:searchBook(args)
                 else
                     pageno = item.start or "?"
                 end
-                
+
                 -- Build context text
                 local context = ""
                 if item.prev_text then
@@ -331,9 +403,9 @@ function MCPTools:searchBook(args)
                 if item.next_text then
                     context = context .. " " .. item.next_text
                 end
-                
+
                 resultText = resultText .. "Page " .. pageno .. ": " .. context
-                
+
                 -- Include XPointer positions for annotation support
                 if item.start then
                     resultText = resultText .. "\n  start=" .. tostring(item.start)
@@ -341,9 +413,9 @@ function MCPTools:searchBook(args)
                         resultText = resultText .. ", end=" .. tostring(item["end"])
                     end
                 end
-                
+
                 resultText = resultText .. "\n\n"
-                
+
                 if i >= 20 then
                     resultText = resultText .. "... and " .. (#results - 20) .. " more results"
                     break
@@ -362,7 +434,7 @@ function MCPTools:searchBook(args)
             }
         end
     end
-    
+
     -- Fallback: for documents without findAllText, return an error
     return {
         content = {
@@ -433,19 +505,20 @@ function MCPTools:getSelection(args)
         local text = selected.text
         if text and text ~= "" then
             local response = "Selected text:\n\n" .. text
-            
+
             -- Add location details if available for use with annotate tool
             if selected.pos0 and selected.pos1 then
-                response = response .. "\n\nLocation: start=" .. tostring(selected.pos0) .. ", end=" .. tostring(selected.pos1)
+                response = response ..
+                    "\n\nLocation: start=" .. tostring(selected.pos0) .. ", end=" .. tostring(selected.pos1)
                 if selected.chapter then
                     response = response .. "\nChapter: " .. tostring(selected.chapter)
                 end
             end
-            
+
             return {
                 content = {
-                    { 
-                        type = "text", 
+                    {
+                        type = "text",
                         text = response,
                     },
                 },
@@ -496,35 +569,35 @@ function MCPTools:annotate(args)
     -- This function adds a highlight or note to text
     -- If note is provided, it creates a highlight with a note
     -- If note is omitted, it creates just a highlight
-    
+
     local Event = require("ui/event")
-    
+
     local note_text = args.note
     local provided_text = args.text
     local arg_start = args.start
     local arg_end = args["end"]
-    
+
     local doc = self.ui.document
-    
+
     -- Get current selection if available
     local selected = nil
     if self.ui.highlight and self.ui.highlight.selected_text then
         selected = self.ui.highlight.selected_text
     end
-    
+
     -- Determine what to highlight based on input combinations:
     -- 1. No text/positions: use current selection
     -- 2. Only positions (start/end): use those positions
     -- 3. Only text: search for it to find positions
     -- 4. Text + positions: use both as provided
     local text_to_highlight, start_pos, end_pos
-    
+
     if arg_start and arg_end then
         -- Positions provided - use them
         start_pos = arg_start
         end_pos = arg_end
-        text_to_highlight = provided_text  -- may be nil, that's ok
-        
+        text_to_highlight = provided_text -- may be nil, that's ok
+
         -- If no text provided with positions, try to get it from selection or leave nil
         if not text_to_highlight and selected and selected.text then
             text_to_highlight = selected.text
@@ -539,8 +612,15 @@ function MCPTools:annotate(args)
                 isError = true,
             }
         end
-        
-        local results = doc:findAllText(provided_text, true, 0, 5, false)
+
+        -- Convert text to a fuzzy regex pattern that matches both ASCII and typographic variants
+        -- This handles cases where LLMs replace smart quotes with straight quotes or vice versa
+        local fuzzyPattern = textToFuzzyRegex(provided_text)
+        local use_regex = true
+
+        logger.dbg("MCP annotate: Using fuzzy regex pattern:", fuzzyPattern)
+        local results = doc:findAllText(fuzzyPattern, true, 0, 5, use_regex)
+
         if not results or #results == 0 then
             return {
                 content = {
@@ -549,7 +629,7 @@ function MCPTools:annotate(args)
                 isError = true,
             }
         end
-        
+
         -- Use the first match
         local match = results[1]
         if not match.start or not match["end"] then
@@ -560,11 +640,11 @@ function MCPTools:annotate(args)
                 isError = true,
             }
         end
-        
+
         start_pos = match.start
         end_pos = match["end"]
         text_to_highlight = match.matched_text or provided_text
-        
+
         -- Warn if multiple matches found
         if #results > 1 then
             logger.dbg("MCP annotate: Multiple matches found for text, using first one")
@@ -590,7 +670,7 @@ function MCPTools:annotate(args)
             isError = true,
         }
     end
-    
+
     -- Get chapter information if available
     -- Prefer chapter from selection if available, otherwise try to get from TOC
     local chapter = nil
@@ -603,7 +683,7 @@ function MCPTools:annotate(args)
     if chapter == "" then
         chapter = nil
     end
-    
+
     -- Check if annotation module is available (modern KOReader)
     if not self.ui.annotation then
         return {
@@ -613,7 +693,7 @@ function MCPTools:annotate(args)
             isError = true,
         }
     end
-    
+
     -- Check for duplicates using the annotation module's match function
     local annotations = self.ui.annotation.annotations or {}
     for i, existing in ipairs(annotations) do
@@ -629,7 +709,7 @@ function MCPTools:annotate(args)
                 and existing.pos1 and end_pos
                 and existing.pos1.x == end_pos.x and existing.pos1.y == end_pos.y
         end
-        
+
         if matches then
             -- If a note is provided and different from existing, update it
             if note_text and note_text ~= "" and existing.note ~= note_text then
@@ -637,7 +717,7 @@ function MCPTools:annotate(args)
                 existing.datetime_updated = os.date("%Y-%m-%d %H:%M:%S")
                 -- Notify the UI about the modification
                 self.ui:handleEvent(Event:new("AnnotationsModified", { existing }))
-                
+
                 return {
                     content = {
                         { type = "text", text = "Updated note on existing highlight" },
@@ -653,7 +733,7 @@ function MCPTools:annotate(args)
             end
         end
     end
-    
+
     -- Create the annotation item (modern format)
     local pg_or_xp = self.ui.paging and start_pos.page or start_pos
     local item = {
@@ -667,15 +747,15 @@ function MCPTools:annotate(args)
         color = self.ui.highlight and self.ui.highlight.view and self.ui.highlight.view.highlight
             and self.ui.highlight.view.highlight.saved_color or "yellow",
     }
-    
+
     -- Add note if provided
     if note_text and note_text ~= "" then
         item.note = note_text
     end
-    
+
     -- Add the annotation using the modern API
     local index = self.ui.annotation:addItem(item)
-    
+
     -- Notify the UI about the new annotation
     local event_data = { item, index_modified = index }
     if note_text and note_text ~= "" then
@@ -684,7 +764,7 @@ function MCPTools:annotate(args)
         event_data.nb_highlights_added = 1
     end
     self.ui:handleEvent(Event:new("AnnotationsModified", event_data))
-    
+
     -- Build concise response message
     local response
     if note_text and note_text ~= "" then
@@ -692,7 +772,7 @@ function MCPTools:annotate(args)
     else
         response = "Added highlight"
     end
-    
+
     return {
         content = {
             { type = "text", text = response },
