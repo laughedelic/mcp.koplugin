@@ -113,7 +113,7 @@ function MCPTools:list()
 
     -- Add note or highlight to text
     table.insert(tools, {
-        name = "add_note",
+        name = "annotate",
         description = "Add a highlight or note to selected text. Creates a highlight when note is omitted, or adds a note to the highlight when provided. If no text/location is provided, uses the currently selected text in the UI.",
         inputSchema = {
             type = "object",
@@ -167,8 +167,8 @@ function MCPTools:call(name, arguments)
         return self:getSelection(arguments)
     elseif name == "get_book_info" then
         return self:getBookInfo(arguments)
-    elseif name == "add_note" then
-        return self:addNote(arguments)
+    elseif name == "annotate" then
+        return self:annotate(arguments)
     else
         return nil  -- Tool not found
     end
@@ -218,9 +218,12 @@ function MCPTools:getPageText(args)
 
     local text = ""
     local hasText = false
+    local locationInfo = nil
     
     for page = startPage, endPage do
         local pageText = nil
+        local pageStartXP = nil
+        local pageEndXP = nil
         
         -- For reflowable documents (EPUB, etc.), try getTextFromXPointers first
         -- This is the most reliable method for CRE documents
@@ -233,11 +236,14 @@ function MCPTools:getPageText(args)
             if startXP and endXP then
                 -- getTextFromXPointers returns text directly, not a table
                 pageText = doc:getTextFromXPointers(startXP, endXP, false)
+                pageStartXP = startXP
+                pageEndXP = endXP
             elseif startXP then
                 -- For the last page, try getting text from the XPointer
                 -- using getTextFromXPointer which gets a paragraph
                 if doc.getTextFromXPointer then
                     pageText = doc:getTextFromXPointer(startXP)
+                    pageStartXP = startXP
                 end
             end
         end
@@ -255,7 +261,16 @@ function MCPTools:getPageText(args)
         
         if pageText and pageText ~= "" then
             hasText = true
-            text = text .. "=== Page " .. page .. " ===\n" .. pageText .. "\n\n"
+            text = text .. "=== Page " .. page .. " ===\n" .. pageText .. "\n"
+            -- Add location info for each page (useful for annotation tool)
+            if pageStartXP then
+                text = text .. "Location: pos0=" .. tostring(pageStartXP)
+                if pageEndXP then
+                    text = text .. ", pos1=" .. tostring(pageEndXP)
+                end
+                text = text .. "\n"
+            end
+            text = text .. "\n"
         else
             text = text .. "=== Page " .. page .. " ===\n(No text available)\n\n"
         end
@@ -467,7 +482,7 @@ function MCPTools:getBookInfo(args)
     }
 end
 
-function MCPTools:addNote(args)
+function MCPTools:annotate(args)
     -- This function adds a highlight or note to text
     -- If note is provided, it creates a highlight with a note
     -- If note is omitted, it creates just a highlight
