@@ -114,7 +114,7 @@ function MCPTools:list()
     -- Add note or highlight to text
     table.insert(tools, {
         name = "annotate",
-        description = "Add a highlight or note to selected text. Creates a highlight when note is omitted, or adds a note to the highlight when provided. If no text/location is provided, uses the currently selected text in the UI.",
+        description = "Add a highlight or note to text. Creates a highlight when note is omitted. Behavior depends on inputs: (1) No text/positions: uses the current UI selection (fails if none). (2) Only start/end positions: annotates that location (e.g. positions from get_selection). (3) Only text: searches for the text in the book to find its position automatically.",
         inputSchema = {
             type = "object",
             properties = {
@@ -124,15 +124,15 @@ function MCPTools:list()
                 },
                 text = {
                     type = "string",
-                    description = "Optional: The text to highlight. If provided, pos0 and pos1 must also be provided. If all are omitted, uses the currently selected text in the UI.",
+                    description = "Optional: The exact text to highlight. If provided without positions, the text will be searched in the book to find its location.",
                 },
-                pos0 = {
+                start = {
                     type = "string",
-                    description = "Optional: Start position (XPointer) of the text. Required if 'text' is provided.",
+                    description = "Optional: Start position (XPointer) from get_selection or search_book results.",
                 },
-                pos1 = {
+                ["end"] = {
                     type = "string",
-                    description = "Optional: End position (XPointer) of the text. Required if 'text' is provided.",
+                    description = "Optional: End position (XPointer) from get_selection or search_book results.",
                 },
             },
         },
@@ -264,9 +264,9 @@ function MCPTools:getPageText(args)
             text = text .. "=== Page " .. page .. " ===\n" .. pageText .. "\n"
             -- Add location info for each page (useful for annotation tool)
             if pageStartXP then
-                text = text .. "Location: pos0=" .. tostring(pageStartXP)
+                text = text .. "Location: start=" .. tostring(pageStartXP)
                 if pageEndXP then
-                    text = text .. ", pos1=" .. tostring(pageEndXP)
+                    text = text .. ", end=" .. tostring(pageEndXP)
                 end
                 text = text .. "\n"
             end
@@ -332,7 +332,17 @@ function MCPTools:searchBook(args)
                     context = context .. " " .. item.next_text
                 end
                 
-                resultText = resultText .. "Page " .. pageno .. ": " .. context .. "\n\n"
+                resultText = resultText .. "Page " .. pageno .. ": " .. context
+                
+                -- Include XPointer positions for annotation support
+                if item.start then
+                    resultText = resultText .. "\n  start=" .. tostring(item.start)
+                    if item["end"] then
+                        resultText = resultText .. ", end=" .. tostring(item["end"])
+                    end
+                end
+                
+                resultText = resultText .. "\n\n"
                 
                 if i >= 20 then
                     resultText = resultText .. "... and " .. (#results - 20) .. " more results"
@@ -424,9 +434,9 @@ function MCPTools:getSelection(args)
         if text and text ~= "" then
             local response = "Selected text:\n\n" .. text
             
-            -- Add location details if available for use with add_note tool
+            -- Add location details if available for use with annotate tool
             if selected.pos0 and selected.pos1 then
-                response = response .. "\n\nLocation: pos0=" .. tostring(selected.pos0) .. ", pos1=" .. tostring(selected.pos1)
+                response = response .. "\n\nLocation: start=" .. tostring(selected.pos0) .. ", end=" .. tostring(selected.pos1)
                 if selected.chapter then
                     response = response .. "\nChapter: " .. tostring(selected.chapter)
                 end
@@ -491,39 +501,80 @@ function MCPTools:annotate(args)
     
     local note_text = args.note
     local provided_text = args.text
-    local pos0 = args.pos0
-    local pos1 = args.pos1
+    local arg_start = args.start
+    local arg_end = args["end"]
     
-    -- Get current selection if no text/positions provided
+    local doc = self.ui.document
+    
+    -- Get current selection if available
     local selected = nil
     if self.ui.highlight and self.ui.highlight.selected_text then
         selected = self.ui.highlight.selected_text
     end
     
-    -- Determine what to highlight
+    -- Determine what to highlight based on input combinations:
+    -- 1. No text/positions: use current selection
+    -- 2. Only positions (start/end): use those positions
+    -- 3. Only text: search for it to find positions
+    -- 4. Text + positions: use both as provided
     local text_to_highlight, start_pos, end_pos
     
-    -- If text is provided, positions must also be provided
-    if provided_text and (not pos0 or not pos1) then
-        return {
-            content = {
-                { type = "text", text = "Error: When 'text' is provided, both 'pos0' and 'pos1' must also be provided" },
-            },
-            isError = true,
-        }
-    end
-    
-    if provided_text and pos0 and pos1 then
-        -- Use provided text and positions
-        text_to_highlight = provided_text
-        start_pos = pos0
-        end_pos = pos1
+    if arg_start and arg_end then
+        -- Positions provided - use them
+        start_pos = arg_start
+        end_pos = arg_end
+        text_to_highlight = provided_text  -- may be nil, that's ok
+        
+        -- If no text provided with positions, try to get it from selection or leave nil
+        if not text_to_highlight and selected and selected.text then
+            text_to_highlight = selected.text
+        end
+    elseif provided_text then
+        -- Only text provided - search for it to find positions
+        if not doc.findAllText then
+            return {
+                content = {
+                    { type = "text", text = "Error: Cannot search for text position - fulltext search not available for this document type" },
+                },
+                isError = true,
+            }
+        end
+        
+        local results = doc:findAllText(provided_text, true, 0, 5, false)
+        if not results or #results == 0 then
+            return {
+                content = {
+                    { type = "text", text = "Error: Could not find the text in the book. Try using more distinctive words or check the exact spelling." },
+                },
+                isError = true,
+            }
+        end
+        
+        -- Use the first match
+        local match = results[1]
+        if not match.start or not match["end"] then
+            return {
+                content = {
+                    { type = "text", text = "Error: Found the text but could not determine its position" },
+                },
+                isError = true,
+            }
+        end
+        
+        start_pos = match.start
+        end_pos = match["end"]
+        text_to_highlight = match.matched_text or provided_text
+        
+        -- Warn if multiple matches found
+        if #results > 1 then
+            logger.dbg("MCP annotate: Multiple matches found for text, using first one")
+        end
     elseif selected and selected.text and selected.text ~= "" then
-        -- Use current selection - validate it has position data
+        -- No text/positions provided - use current selection
         if not selected.pos0 or not selected.pos1 then
             return {
                 content = {
-                    { type = "text", text = "Error: Current selection is missing position information (pos0/pos1). Cannot add highlight without location data." },
+                    { type = "text", text = "Error: Current selection is missing position information. Cannot add highlight without location data." },
                 },
                 isError = true,
             }
@@ -534,13 +585,11 @@ function MCPTools:annotate(args)
     else
         return {
             content = {
-                { type = "text", text = "Error: No text selected and no text/position information provided" },
+                { type = "text", text = "Error: No text selected and no text or position information provided" },
             },
             isError = true,
         }
     end
-    
-    local doc = self.ui.document
     
     -- Get chapter information if available
     -- Prefer chapter from selection if available, otherwise try to get from TOC
@@ -591,7 +640,7 @@ function MCPTools:annotate(args)
                 
                 return {
                     content = {
-                        { type = "text", text = "Successfully updated note on existing highlight:\n\nText: " .. text_to_highlight .. "\n\nNote: " .. note_text },
+                        { type = "text", text = "Updated note on existing highlight" },
                     },
                 }
             else
@@ -636,12 +685,12 @@ function MCPTools:annotate(args)
     end
     self.ui:handleEvent(Event:new("AnnotationsModified", event_data))
     
-    -- Build response message
+    -- Build concise response message
     local response
     if note_text and note_text ~= "" then
-        response = "Successfully added note to highlight:\n\nText: " .. text_to_highlight .. "\n\nNote: " .. note_text
+        response = "Added highlight with note"
     else
-        response = "Successfully added highlight:\n\n" .. text_to_highlight
+        response = "Added highlight"
     end
     
     return {
