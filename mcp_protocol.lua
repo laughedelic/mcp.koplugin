@@ -41,6 +41,13 @@ function MCPProtocol:setTools(tools)
     }
 end
 
+function MCPProtocol:setPrompts(prompts)
+    self.prompts = prompts
+    self.capabilities.prompts = {
+        listChanged = false,
+    }
+end
+
 function MCPProtocol:handleRequest(request)
     -- Parse JSON-RPC request
     local ok, jsonRequest = pcall(rapidjson.decode, request.body)
@@ -93,6 +100,10 @@ function MCPProtocol:handleRequest(request)
         return self:handleToolsList(id, params)
     elseif method == "tools/call" then
         return self:handleToolsCall(id, params)
+    elseif method == "prompts/list" then
+        return self:handlePromptsList(id, params)
+    elseif method == "prompts/get" then
+        return self:handlePromptsGet(id, params)
     else
         return self:createErrorResponse(id, -32601, "Method not found")
     end
@@ -258,6 +269,52 @@ function MCPProtocol:handleToolsCall(id, params)
 
     if not result then
         return self:createErrorResponse(id, -32602, "Tool not found")
+    end
+
+    return self:createSuccessResponse(id, result)
+end
+
+function MCPProtocol:handlePromptsList(id, params)
+    if not self.prompts then
+        return self:createErrorResponse(id, -32603, "Prompts not available")
+    end
+
+    local ok, result = pcall(function()
+        return self.prompts:list()
+    end)
+
+    if not ok then
+        logger.err("Error listing prompts:", result)
+        return self:createErrorResponse(id, -32603, "Internal error")
+    end
+
+    return self:createSuccessResponse(id, { prompts = result })
+end
+
+function MCPProtocol:handlePromptsGet(id, params)
+    if not self.prompts then
+        return self:createErrorResponse(id, -32603, "Prompts not available")
+    end
+
+    local name = params.name
+    local arguments = params.arguments or {}
+
+    if not name then
+        return self:createErrorResponse(id, -32602, "Invalid params: missing name")
+    end
+
+    local ok, result, err = pcall(function()
+        return self.prompts:get(name, arguments)
+    end)
+
+    if not ok then
+        logger.err("Error getting prompt:", result)
+        return self:createErrorResponse(id, -32603, "Internal error")
+    end
+
+    if not result then
+        -- result is nil, err contains the error message from prompts:get
+        return self:createErrorResponse(id, -32602, err or "Prompt not found")
     end
 
     return self:createSuccessResponse(id, result)

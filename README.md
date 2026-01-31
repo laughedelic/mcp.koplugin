@@ -132,6 +132,21 @@ The plugin provides these callable tools:
 | `goto_page`           | Navigate to a specific page                                                  | `page`                                                                     |
 | `annotate`            | Add highlight or note to text                                                | `note` (optional), `text` (optional), `start` (optional), `end` (optional) |
 
+### Prompts
+
+Prompts are pre-defined conversation starters for common reading companion interactions. MCP clients that support prompts (like Claude) can present these as quick actions.
+
+| Prompt      | Title           | Description                                                   |
+| ----------- | --------------- | ------------------------------------------------------------- |
+| `explain`   | Explain This    | Explain selected text or current page content                 |
+| `summarize` | Summarize       | Summarize page, chapter, or reading progress                  |
+| `discuss`   | Let's Discuss   | Start a conversation about themes and ideas                   |
+| `research`  | Research This   | Get background info about book, author, or historical context |
+| `note`      | Take a Note     | Create and save annotations with assistant help               |
+| `quiz`      | Quiz Me         | Test comprehension with generated questions                   |
+| `translate` | Translate       | Translate text to another language                            |
+| `recommend` | Recommend Books | Get personalized book recommendations                         |
+
 
 ## Local & Remote Modes
 

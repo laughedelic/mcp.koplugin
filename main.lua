@@ -30,6 +30,7 @@ local MCPServer = require("mcp_server")
 local MCPProtocol = require("mcp_protocol")
 local MCPResources = require("mcp_resources")
 local MCPTools = require("mcp_tools")
+local MCPPrompts = require("mcp_prompts")
 local MCPRelay = require("mcp_relay")
 
 -- Module-level state to persist across plugin instance recreation
@@ -39,6 +40,7 @@ local shared_state = {
     protocol = nil,  -- shared protocol instance
     resources = nil, -- shared resources instance
     tools = nil,     -- shared tools instance
+    prompts = nil,   -- shared prompts instance
     relay = nil,     -- shared relay instance
     -- MCP server state (for UI - true when MCP is active in any mode)
     server_running = false,
@@ -74,12 +76,15 @@ function MCP:init()
         shared_state.protocol = MCPProtocol:new()
         shared_state.resources = MCPResources:new()
         shared_state.tools = MCPTools:new()
+        shared_state.prompts = MCPPrompts:new()
         shared_state.relay = MCPRelay:new()
 
         -- Wire up components
         shared_state.protocol:setResources(shared_state.resources)
         shared_state.protocol:setTools(shared_state.tools)
+        shared_state.protocol:setPrompts(shared_state.prompts)
         shared_state.tools:setResources(shared_state.resources)
+        shared_state.prompts:setResources(shared_state.resources)
 
         -- Configure relay
         shared_state.relay:setRelayUrl(G_reader_settings:readSetting("mcp_relay_url", DEFAULT_RELAY_URL))
@@ -104,6 +109,7 @@ function MCP:init()
     -- This ensures the tools/resources have access to the current UI
     shared_state.resources:setUI(self.ui)
     shared_state.tools:setUI(self.ui)
+    shared_state.prompts:setUI(self.ui)
 
     -- If server is running, ensure polling continues with new instance
     if shared_state.server_running and not shared_state.poll_task then
@@ -219,7 +225,7 @@ function MCP:buildSettingsMenu()
                 end
             end,
             help_text = _(
-            "Automatically stop the server after a period of inactivity. A warning notification will appear before stopping, which can be tapped to keep the server alive."),
+                "Automatically stop the server after a period of inactivity. A warning notification will appear before stopping, which can be tapped to keep the server alive."),
             keep_menu_open = true,
             callback = function(touchmenu_instance)
                 local timeout = G_reader_settings:readSetting("mcp_server_idle_timeout_minutes",
@@ -267,7 +273,7 @@ function MCP:buildSettingsMenu()
         {
             text = _("Remote (via cloud relay)"),
             help_text = _(
-            "Connect via cloud relay for access from anywhere (Claude Desktop, Claude Mobile, etc.) without complex network setup."),
+                "Connect via cloud relay for access from anywhere (Claude Desktop, Claude Mobile, etc.) without complex network setup."),
             checked_func = function()
                 return self:getServerMode() == "remote"
             end,
