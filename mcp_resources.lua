@@ -12,16 +12,17 @@ local logger = require("logger")
 local DocSettings = require("docsettings")
 local rapidjson = require("rapidjson")
 
--- Normalize authors to always be a table (props.authors can be string or table)
-local function normalizeAuthors(authors)
+-- Format authors as a comma-separated string
+local function formatAuthors(authors)
     if not authors then
-        return {}
+        return nil
     elseif type(authors) == "string" then
-        return { authors }
-    elseif type(authors) == "table" then
         return authors
+    elseif type(authors) == "table" then
+        if #authors == 0 then return nil end
+        return table.concat(authors, ", ")
     else
-        return {}
+        return nil
     end
 end
 
@@ -243,50 +244,159 @@ function MCPResources:getReadingContext()
     local current_page = doc:getCurrentPage()
     local page_count = doc:getPageCount()
 
-    -- Build context object
+    -- Build context object with sections:
+    -- book: title, authors, total_pages
+    -- chapter: name, start_page, end_page
+    -- selection: text the user has selected (optional)
+    -- current_page: number, text (with highlights marked inline)
+    -- pages_text: merged text blob with page markers (for medium context)
+
     local context = {
         book = {
             title = props.title or "Unknown",
-            authors = normalizeAuthors(props.authors),
-            file = doc.file,
-            format = doc.file:match("%.([^.]+)$"),
-        },
-        position = {
-            current_page = current_page,
+            authors = formatAuthors(props.authors),
             total_pages = page_count,
-            percent = math.floor((current_page / page_count) * 100),
         },
     }
 
-    -- Get current chapter from TOC
-    if self.ui.toc and self.ui.toc.getTocTitleByPage then
-        local chapter = self.ui.toc:getTocTitleByPage(current_page)
-        if chapter and chapter ~= "" then
-            context.chapter = chapter
-        end
+    -- Get current chapter info with page bounds
+    local chapter_info = self:getChapterInfo(current_page)
+    if chapter_info then
+        context.chapter = chapter_info
     end
 
-    -- Get current page text
-    context.page_text = self:extractPageText(current_page)
-
-    -- Get selection if available
+    -- Get selection if available (actual text selection only)
     if self.ui.highlight and self.ui.highlight.selected_text then
         local selected = self.ui.highlight.selected_text
         if selected.text and selected.text ~= "" then
-            context.selection = {
-                text = selected.text,
-            }
-            if selected.chapter then
-                context.selection.chapter = selected.chapter
-            end
+            context.selection = selected.text
         end
     end
+
+    -- Build current_page section
+    context.current_page = {
+        number = current_page,
+    }
+
+    -- For the resource, we provide medium-sized context: current + 1 surrounding pages
+    -- as a single text blob with page markers
+    local pages_text = ""
+
+    -- Previous page
+    if current_page > 1 then
+        local prevText = self:getPageTextWithHighlights(current_page - 1)
+        if prevText and prevText ~= "" then
+            pages_text = pages_text .. "== Page " .. (current_page - 1) .. " ==\n\n" .. prevText .. "\n\n"
+        end
+    end
+
+    -- Current page
+    local currentText = self:getPageTextWithHighlights(current_page)
+    pages_text = pages_text .. "== Current page: " .. current_page .. " ==\n\n"
+    if currentText and currentText ~= "" then
+        pages_text = pages_text .. currentText .. "\n\n"
+    end
+
+    -- Next page
+    if current_page < page_count then
+        local nextText = self:getPageTextWithHighlights(current_page + 1)
+        if nextText and nextText ~= "" then
+            pages_text = pages_text .. "== Page " .. (current_page + 1) .. " ==\n\n" .. nextText .. "\n\n"
+        end
+    end
+
+    context.pages_text = pages_text
 
     return {
         uri = "book://current/context",
         mimeType = "application/json",
         text = rapidjson.encode(context) or "{}",
     }
+end
+
+-- Helper: Get chapter info with start/end pages
+function MCPResources:getChapterInfo(page)
+    local doc = self.ui.document
+    local toc = doc:getToc()
+
+    if not toc or #toc == 0 then
+        return nil
+    end
+
+    -- Find the chapter containing the current page
+    local current_chapter = nil
+    local next_chapter_page = doc:getPageCount() + 1
+
+    for i, item in ipairs(toc) do
+        local chapter_page = item.page or 0
+        if chapter_page <= page then
+            current_chapter = {
+                name = item.title or "",
+                start_page = chapter_page,
+            }
+        end
+        if current_chapter and chapter_page > page then
+            next_chapter_page = chapter_page
+            break
+        end
+    end
+
+    if current_chapter then
+        current_chapter.end_page = next_chapter_page - 1
+        return current_chapter
+    end
+
+    return nil
+end
+
+-- Helper: Get all highlights on a page (for marking in text)
+function MCPResources:getHighlightsForPage(page)
+    local highlights = {}
+
+    if self.ui.annotation and self.ui.annotation.annotations then
+        for _, item in ipairs(self.ui.annotation.annotations) do
+            if item.page == page then
+                table.insert(highlights, {
+                    text = item.text,
+                    note = item.note,
+                })
+            end
+        end
+    end
+
+    return highlights
+end
+
+-- Helper: Get page text with highlights marked inline using markdown
+-- Format: text **highlighted text** text, or **highlighted text** (Note: note text) if there's a note
+function MCPResources:getPageTextWithHighlights(page)
+    local pageText = self:extractPageText(page)
+    if not pageText or pageText == "" then return nil end
+
+    local highlights = self:getHighlightsForPage(page)
+    if #highlights == 0 then return pageText end
+
+    -- Sort highlights by length (longest first) to avoid partial replacements
+    table.sort(highlights, function(a, b)
+        return #(a.text or "") > #(b.text or "")
+    end)
+
+    -- Mark each highlight in the text
+    for _, h in ipairs(highlights) do
+        if h.text and h.text ~= "" then
+            local replacement
+            if h.note and h.note ~= "" then
+                replacement = "**" .. h.text .. "** (Note: " .. h.note .. ")"
+            else
+                replacement = "**" .. h.text .. "**"
+            end
+            -- Simple string replacement (first occurrence)
+            local escaped_text = h.text:gsub("([%%%^%$%(%)%.%[%]%*%+%-%?])", "%%%1")
+            pageText = pageText:gsub(escaped_text, replacement, 1)
+        end
+    end
+
+    return pageText
 end
 
 --------------------------------------------------------------------------------
@@ -299,7 +409,7 @@ function MCPResources:getMetadata()
 
     local data = {
         title = props.title or "Unknown",
-        authors = normalizeAuthors(props.authors),
+        authors = formatAuthors(props.authors),
         language = props.language,
         series = props.series,
         keywords = props.keywords,
@@ -507,7 +617,7 @@ function MCPResources:getLibraryBooks()
                 local doc_settings = DocSettings:open(item.file)
                 if doc_settings then
                     local props = doc_settings:readSetting("doc_props") or {}
-                    book.authors = normalizeAuthors(props.authors)
+                    book.authors = formatAuthors(props.authors)
                     book.percent_finished = doc_settings:readSetting("percent_finished") or 0
                     book.last_read = item.time
                 end
@@ -597,7 +707,7 @@ function MCPResources:getBookByPath(path)
     local book = {
         file = path,
         title = props.title or path:match("([^/]+)$"),
-        authors = normalizeAuthors(props.authors),
+        authors = formatAuthors(props.authors),
         language = props.language,
         series = props.series,
         description = props.description,
