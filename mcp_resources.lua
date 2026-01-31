@@ -285,7 +285,7 @@ function MCPResources:getReadingContext()
     return {
         uri = "book://current/context",
         mimeType = "application/json",
-        text = rapidjson.encode(context),
+        text = rapidjson.encode(context) or "{}",
     }
 end
 
@@ -319,7 +319,7 @@ function MCPResources:getMetadata()
     return {
         uri = "book://current/metadata",
         mimeType = "application/json",
-        text = rapidjson.encode(data),
+        text = rapidjson.encode(data) or "{}",
     }
 end
 
@@ -349,7 +349,7 @@ function MCPResources:getTableOfContents()
     return {
         uri = "book://current/toc",
         mimeType = "application/json",
-        text = rapidjson.encode(tocData),
+        text = rapidjson.encode(tocData) or "{}",
     }
 end
 
@@ -384,7 +384,7 @@ function MCPResources:getBookmarks()
     return {
         uri = "book://current/bookmarks",
         mimeType = "application/json",
-        text = rapidjson.encode(bookmarks),
+        text = rapidjson.encode(bookmarks) or "{}",
     }
 end
 
@@ -520,7 +520,7 @@ function MCPResources:getLibraryBooks()
     return {
         uri = "library://books",
         mimeType = "application/json",
-        text = rapidjson.encode({ books = books }),
+        text = rapidjson.encode({ books = books }) or "{}",
     }
 end
 
@@ -529,12 +529,19 @@ function MCPResources:getCollections()
 
     local ok, ReadCollection = pcall(require, "readcollection")
     if ok and ReadCollection then
-        local coll = ReadCollection:read()
-        if coll then
-            for name, items in pairs(coll) do
+        -- ReadCollection initializes on require, data is in .coll property
+        -- Force re-read to get latest data
+        ReadCollection:_read()
+        if ReadCollection.coll then
+            for name, items in pairs(ReadCollection.coll) do
+                -- items is a hash table of files, count them
+                local count = 0
+                for _ in pairs(items) do
+                    count = count + 1
+                end
                 table.insert(collections, {
                     name = name,
-                    book_count = #items,
+                    book_count = count,
                 })
             end
         end
@@ -543,7 +550,7 @@ function MCPResources:getCollections()
     return {
         uri = "library://collections",
         mimeType = "application/json",
-        text = rapidjson.encode({ collections = collections }),
+        text = rapidjson.encode({ collections = collections }) or "{}",
     }
 end
 
@@ -567,7 +574,7 @@ function MCPResources:getReadingHistory()
     return {
         uri = "library://history",
         mimeType = "application/json",
-        text = rapidjson.encode({ history = history }),
+        text = rapidjson.encode({ history = history }) or "{}",
     }
 end
 
@@ -600,7 +607,7 @@ function MCPResources:getBookByPath(path)
     return {
         uri = "library://books/" .. path,
         mimeType = "application/json",
-        text = rapidjson.encode(book),
+        text = rapidjson.encode(book) or "{}",
     }
 end
 

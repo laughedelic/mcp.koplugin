@@ -35,33 +35,33 @@ local MCPRelay = require("mcp_relay")
 -- Module-level state to persist across plugin instance recreation
 -- (when switching between file browser and reader)
 local shared_state = {
-    server = nil,       -- shared HTTP server instance
-    protocol = nil,     -- shared protocol instance
-    resources = nil,    -- shared resources instance
-    tools = nil,        -- shared tools instance
-    relay = nil,        -- shared relay instance
+    server = nil,    -- shared HTTP server instance
+    protocol = nil,  -- shared protocol instance
+    resources = nil, -- shared resources instance
+    tools = nil,     -- shared tools instance
+    relay = nil,     -- shared relay instance
     -- MCP server state (for UI - true when MCP is active in any mode)
     server_running = false,
     -- Internal state for cleanup
-    local_http_running = false,  -- local HTTP server active (local mode)
-    relay_running = false,       -- cloud relay active (remote mode)
+    local_http_running = false, -- local HTTP server active (local mode)
+    relay_running = false,      -- cloud relay active (remote mode)
     relay_connected = false,
     relay_url = nil,
     poll_task = nil,
     relay_poll_task = nil,
-    last_interaction_time = nil,  -- timestamp of last MCP interaction
-    idle_check_task = nil,        -- scheduled idle check function
-    idle_warning_widget = nil,    -- reference to the warning notification widget
+    last_interaction_time = nil, -- timestamp of last MCP interaction
+    idle_check_task = nil,       -- scheduled idle check function
+    idle_warning_widget = nil,   -- reference to the warning notification widget
 }
 
-local MCP = WidgetContainer:extend{
+local MCP = WidgetContainer:extend {
     name = "mcp",
     is_doc_only = false,
 }
 
 -- Default settings
-local DEFAULT_IDLE_TIMEOUT_MINUTES = 0  -- 0 = disabled
-local IDLE_WARNING_SECONDS = 5  -- Show warning 5 seconds before stopping
+local DEFAULT_IDLE_TIMEOUT_MINUTES = 0 -- 0 = disabled
+local IDLE_WARNING_SECONDS = 5         -- Show warning 5 seconds before stopping
 local DEFAULT_RELAY_URL = "https://mcp-relay.laughedelic.workers.dev"
 
 function MCP:init()
@@ -79,7 +79,8 @@ function MCP:init()
         -- Wire up components
         shared_state.protocol:setResources(shared_state.resources)
         shared_state.protocol:setTools(shared_state.tools)
-        
+        shared_state.tools:setResources(shared_state.resources)
+
         -- Configure relay
         shared_state.relay:setRelayUrl(G_reader_settings:readSetting("mcp_relay_url", DEFAULT_RELAY_URL))
         local saved_device_id = G_reader_settings:readSetting("mcp_relay_device_id")
@@ -87,7 +88,7 @@ function MCP:init()
             shared_state.relay:setDeviceId(saved_device_id)
         end
         shared_state.relay:setDeviceName(G_reader_settings:readSetting("mcp_relay_device_name", "KOReader"))
-        
+
         -- Set up relay callbacks
         shared_state.relay:setStatusCallback(function(connected, url)
             shared_state.relay_connected = connected
@@ -163,7 +164,7 @@ function MCP:addToMainMenu(menu_items)
                 local current_mode = self:getServerMode()
                 local new_mode = current_mode == "remote" and "local" or "remote"
                 self:setServerMode(new_mode)
-                UIManager:show(Notification:new{
+                UIManager:show(Notification:new {
                     text = new_mode == "remote" and _("Switched to remote mode (via cloud relay)") or _("Switched to local network mode"),
                     timeout = 2,
                 })
@@ -209,18 +210,21 @@ function MCP:buildSettingsMenu()
         -- Idle timeout
         {
             text_func = function()
-                local timeout = G_reader_settings:readSetting("mcp_server_idle_timeout_minutes", DEFAULT_IDLE_TIMEOUT_MINUTES)
+                local timeout = G_reader_settings:readSetting("mcp_server_idle_timeout_minutes",
+                    DEFAULT_IDLE_TIMEOUT_MINUTES)
                 if timeout > 0 then
                     return T(_("Idle timeout: %1 min"), timeout)
                 else
                     return _("Idle timeout: disabled")
                 end
             end,
-            help_text = _("Automatically stop the server after a period of inactivity. A warning notification will appear before stopping, which can be tapped to keep the server alive."),
+            help_text = _(
+            "Automatically stop the server after a period of inactivity. A warning notification will appear before stopping, which can be tapped to keep the server alive."),
             keep_menu_open = true,
             callback = function(touchmenu_instance)
-                local timeout = G_reader_settings:readSetting("mcp_server_idle_timeout_minutes", DEFAULT_IDLE_TIMEOUT_MINUTES)
-                local idle_dialog = SpinWidget:new{
+                local timeout = G_reader_settings:readSetting("mcp_server_idle_timeout_minutes",
+                    DEFAULT_IDLE_TIMEOUT_MINUTES)
+                local idle_dialog = SpinWidget:new {
                     title_text = _("MCP server idle timeout"),
                     info_text = _("Stop the server after this period of inactivity. Set to 0 to disable."),
                     value = timeout,
@@ -262,7 +266,8 @@ function MCP:buildSettingsMenu()
         -- Server Mode as radio buttons
         {
             text = _("Remote (via cloud relay)"),
-            help_text = _("Connect via cloud relay for access from anywhere (Claude Desktop, Claude Mobile, etc.) without complex network setup."),
+            help_text = _(
+            "Connect via cloud relay for access from anywhere (Claude Desktop, Claude Mobile, etc.) without complex network setup."),
             checked_func = function()
                 return self:getServerMode() == "remote"
             end,
@@ -309,7 +314,7 @@ function MCP:buildSettingsMenu()
             callback = function(touchmenu_instance)
                 local relay_url = G_reader_settings:readSetting("mcp_relay_url", DEFAULT_RELAY_URL)
                 local input_dialog
-                input_dialog = InputDialog:new{
+                input_dialog = InputDialog:new {
                     title = _("Cloud relay server URL"),
                     input = relay_url,
                     input_hint = DEFAULT_RELAY_URL,
@@ -371,13 +376,14 @@ function MCP:buildSettingsMenu()
             end,
             callback = function(touchmenu_instance)
                 local device_id = G_reader_settings:readSetting("mcp_relay_device_id")
-                local message = device_id 
-                    and T(_("Current device ID:\n%1\n\nDo you want to reset it? This will change your relay URL."), device_id)
+                local message = device_id
+                    and T(_("Current device ID:\n%1\n\nDo you want to reset it? This will change your relay URL."),
+                        device_id)
                     or _("No device ID set yet. It will be generated when you first connect to the cloud relay.")
-                
+
                 local ConfirmBox = require("ui/widget/confirmbox")
                 local mcp_self = self
-                UIManager:show(ConfirmBox:new{
+                UIManager:show(ConfirmBox:new {
                     text = message,
                     ok_text = _("Reset"),
                     ok_callback = function()
@@ -387,12 +393,12 @@ function MCP:buildSettingsMenu()
                         if shared_state.relay_running then
                             mcp_self:stopServer()
                             mcp_self:startServer()
-                            UIManager:show(Notification:new{
+                            UIManager:show(Notification:new {
                                 text = _("Server restarting with new Device ID"),
                                 timeout = 3,
                             })
                         else
-                            UIManager:show(Notification:new{
+                            UIManager:show(Notification:new {
                                 text = _("Device ID will be regenerated on next connect"),
                                 timeout = 3,
                             })
@@ -427,7 +433,7 @@ function MCP:startServer()
         self:doStartServer()
         return
     end
-    
+
     -- WiFi is off or not connected - turn it on and wait for connection
     logger.info("MCP: WiFi not connected, turning it on...")
     NetworkMgr:turnOnWifiAndWaitForConnection(function()
@@ -440,7 +446,7 @@ end
 function MCP:doStartServer()
     -- Double-check network is available
     if not NetworkMgr:isConnected() then
-        UIManager:show(Notification:new{
+        UIManager:show(Notification:new {
             text = _("Failed to start: network not available"),
             timeout = 3,
         })
@@ -452,7 +458,7 @@ function MCP:doStartServer()
     shared_state.tools:setUI(self.ui)
 
     local mode = self:getServerMode()
-    
+
     if mode == "remote" then
         -- Remote mode: only start cloud relay (no local server needed)
         self:startRelay(true)
@@ -489,7 +495,7 @@ function MCP:startLocalServer(silent)
     end)
 
     if not success then
-        UIManager:show(Notification:new{
+        UIManager:show(Notification:new {
             text = _("Failed to start MCP server"),
             timeout = 3,
         })
@@ -509,7 +515,7 @@ function MCP:startLocalServer(silent)
     -- Show notification only if not in silent mode
     if not silent then
         local ip = shared_state.server:getLocalIP()
-        UIManager:show(Notification:new{
+        UIManager:show(Notification:new {
             text = T(_("MCP server started (local): %1:%2"), ip, port),
             timeout = 4,
         })
@@ -526,7 +532,7 @@ function MCP:stopServer()
 
     -- Stop relay if running (remote mode)
     if shared_state.relay_running then
-        self:stopRelay(true)  -- silent mode
+        self:stopRelay(true) -- silent mode
     end
 
     -- Stop local HTTP server if running (local mode)
@@ -540,7 +546,7 @@ function MCP:stopServer()
         -- Stop server
         shared_state.server:stop()
         shared_state.local_http_running = false
-        
+
         -- On Kindle devices, close firewall port
         local port = shared_state.server.port
         if Device:isKindle() then
@@ -562,7 +568,7 @@ function MCP:stopServer()
     self:cancelIdleWarning()
     shared_state.last_interaction_time = nil
 
-    UIManager:show(Notification:new{
+    UIManager:show(Notification:new {
         text = _("MCP server stopped"),
         timeout = 2,
     })
@@ -594,9 +600,9 @@ function MCP:startRelay(show_notification)
     if shared_state.relay_running then
         return true
     end
-    
+
     logger.info("MCP: Starting cloud relay")
-    
+
     -- Set up the request handler to forward to the MCP protocol handler
     shared_state.relay:setRequestHandler(function(request)
         -- Update last interaction time for idle timeout
@@ -604,25 +610,25 @@ function MCP:startRelay(show_notification)
         self:cancelIdleWarning()
         return shared_state.protocol:handleRequest(request)
     end)
-    
+
     local success, device_id = shared_state.relay:start()
     if success then
         shared_state.server_running = true
         shared_state.relay_running = true
         shared_state.last_interaction_time = os.time()
-        
+
         -- Start idle timeout checking
         self:scheduleIdleCheck()
-        
+
         if show_notification then
-            UIManager:show(Notification:new{
+            UIManager:show(Notification:new {
                 text = _("MCP server started (☁ remote)"),
                 timeout = 4,
             })
         end
         return true
     else
-        UIManager:show(Notification:new{
+        UIManager:show(Notification:new {
             text = _("Failed to start MCP server (relay error)"),
             timeout = 3,
         })
@@ -635,23 +641,23 @@ function MCP:stopRelay(silent)
     if not shared_state.relay_running then
         return
     end
-    
+
     logger.info("MCP: Stopping cloud relay")
-    
+
     -- Stop polling
     if shared_state.relay_poll_task then
         UIManager:unschedule(shared_state.relay_poll_task)
         shared_state.relay_poll_task = nil
     end
-    
+
     shared_state.relay:stop()
     shared_state.relay_running = false
     shared_state.relay_connected = false
     shared_state.relay_url = nil
-    
+
     -- Only show notification if not silent
     if not silent then
-        UIManager:show(Notification:new{
+        UIManager:show(Notification:new {
             text = _("Cloud relay stopped"),
             timeout = 2,
         })
@@ -661,32 +667,32 @@ end
 -- Show server details dialog with connection info, QR code (for remote mode), and action buttons
 function MCP:showServerDetails()
     local mode = self:getServerMode()
-    
+
     if not shared_state.server_running then
-        UIManager:show(InfoMessage:new{
+        UIManager:show(InfoMessage:new {
             text = _("MCP Server is not running.\n\nUse the MCP server toggle in the Tools menu to start it."),
         })
         return
     end
-    
+
     local mcp_self = self
     local url
     local title
     local is_remote = mode == "remote"
-    
+
     if is_remote then
         if shared_state.relay_connected and shared_state.relay_url then
             url = shared_state.relay_url
             title = _("MCP Server (☁ Remote)")
         elseif shared_state.relay_running then
             -- Still connecting
-            UIManager:show(InfoMessage:new{
+            UIManager:show(InfoMessage:new {
                 text = _("Cloud relay is connecting...\n\nDevice ID: ") .. (shared_state.relay:getDeviceId() or _("generating...")) ..
-                       _("\n\nPlease wait for the connection to be established."),
+                    _("\n\nPlease wait for the connection to be established."),
             })
             return
         else
-            UIManager:show(InfoMessage:new{
+            UIManager:show(InfoMessage:new {
                 text = _("Cloud relay not connected.\n\nCheck your network connection and try restarting the server."),
             })
             return
@@ -697,53 +703,53 @@ function MCP:showServerDetails()
         url = "http://" .. ip .. ":" .. port
         title = _("MCP Server (Local)")
     end
-    
+
     -- Create the dialog content
-    local dialog_content = VerticalGroup:new{ align = "center" }
-    
+    local dialog_content = VerticalGroup:new { align = "center" }
+
     -- Add QR code for remote mode
     if is_remote then
         local qr_size = math.min(Screen:getWidth(), Screen:getHeight()) * 0.5
-        local qr_widget = QRWidget:new{
+        local qr_widget = QRWidget:new {
             text = url,
             width = qr_size,
             height = qr_size,
         }
-        table.insert(dialog_content, CenterContainer:new{
+        table.insert(dialog_content, CenterContainer:new {
             dimen = { w = Screen:getWidth() * 0.8, h = qr_size },
             qr_widget,
         })
-        table.insert(dialog_content, VerticalSpan:new{ width = Size.padding.large })
+        table.insert(dialog_content, VerticalSpan:new { width = Size.padding.large })
     end
-    
+
     -- Add URL text
-    local url_widget = TextBoxWidget:new{
+    local url_widget = TextBoxWidget:new {
         text = url,
         width = Screen:getWidth() * 0.75,
         face = Font:getFace("cfont", 18),
         alignment = "center",
     }
-    table.insert(dialog_content, CenterContainer:new{
+    table.insert(dialog_content, CenterContainer:new {
         dimen = { w = Screen:getWidth() * 0.8, h = url_widget:getSize().h },
         url_widget,
     })
-    
+
     -- Add settings hint text
-    local settings_hint = TextBoxWidget:new{
+    local settings_hint = TextBoxWidget:new {
         text = _("Settings: ☰ Menu → Network → MCP server"),
         width = Screen:getWidth() * 0.75,
         face = Font:getFace("cfont", 14),
         alignment = "center",
     }
-    table.insert(dialog_content, VerticalSpan:new{ width = Size.padding.default })
-    table.insert(dialog_content, CenterContainer:new{
+    table.insert(dialog_content, VerticalSpan:new { width = Size.padding.default })
+    table.insert(dialog_content, CenterContainer:new {
         dimen = { w = Screen:getWidth() * 0.8, h = settings_hint:getSize().h },
         settings_hint,
     })
-    
+
     -- Create the dialog with buttons
     local details_dialog
-    details_dialog = ButtonDialog:new{
+    details_dialog = ButtonDialog:new {
         title = title,
         width_factor = 0.9,
         buttons = {
@@ -766,10 +772,10 @@ function MCP:showServerDetails()
             },
         },
     }
-    
+
     -- Add the QR/URL content to the dialog
     details_dialog:addWidget(dialog_content)
-    
+
     UIManager:show(details_dialog)
 end
 
@@ -777,7 +783,7 @@ end
 function MCP:showSetupInstructions()
     local mode = self:getServerMode()
     local instructions
-    
+
     if mode == "remote" and shared_state.relay_url then
         instructions = _("To connect an MCP client:\n\n" ..
             "Claude Desktop/Mobile:\n" ..
@@ -800,8 +806,8 @@ function MCP:showSetupInstructions()
             "Note: Local mode requires devices to be on the same network. " ..
             "For remote access, switch to Remote (cloud relay) mode in settings.")
     end
-    
-    UIManager:show(InfoMessage:new{
+
+    UIManager:show(InfoMessage:new {
         text = instructions,
     })
 end
@@ -813,11 +819,11 @@ function MCP:scheduleIdleCheck()
 
     local timeout_minutes = G_reader_settings:readSetting("mcp_server_idle_timeout_minutes", DEFAULT_IDLE_TIMEOUT_MINUTES)
     if timeout_minutes <= 0 or not shared_state.server_running then
-        return  -- Idle timeout disabled or server not running
+        return -- Idle timeout disabled or server not running
     end
 
     local timeout_seconds = timeout_minutes * 60
-    local check_interval = math.min(30, timeout_seconds / 4)  -- Check at least every 30 seconds
+    local check_interval = math.min(30, timeout_seconds / 4) -- Check at least every 30 seconds
 
     shared_state.idle_check_task = function()
         if not shared_state.server_running or not shared_state.last_interaction_time then
@@ -860,10 +866,10 @@ end
 
 function MCP:showIdleWarning(seconds_remaining)
     -- Create a notification that can be tapped to keep the server alive
-    shared_state.idle_warning_widget = Notification:new{
+    shared_state.idle_warning_widget = Notification:new {
         text = _("MCP will be stopped (tap to keep alive)"),
         timeout = seconds_remaining,
-        toast = false,  -- Not a toast, so it captures the tap event
+        toast = false, -- Not a toast, so it captures the tap event
     }
 
     -- Override the tap handler to reset the idle timer
@@ -874,7 +880,7 @@ function MCP:showIdleWarning(seconds_remaining)
         logger.info("MCP: Idle timeout reset by user tap")
 
         -- Show confirmation
-        UIManager:show(Notification:new{
+        UIManager:show(Notification:new {
             text = _("MCP server kept alive"),
             timeout = 2,
         })
@@ -942,7 +948,7 @@ To use:
 Version: 1.0.0
 Protocol: MCP 2025-03-26]])
 
-    UIManager:show(InfoMessage:new{
+    UIManager:show(InfoMessage:new {
         text = about_text,
     })
 end
