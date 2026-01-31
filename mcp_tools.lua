@@ -86,26 +86,88 @@ function MCPTools:setUI(ui)
     self.ui = ui
 end
 
+--------------------------------------------------------------------------------
+-- Helper: Get book context for enriching tool responses
+--------------------------------------------------------------------------------
+
+-- Normalize authors to always be a table
+local function normalizeAuthors(authors)
+    if not authors then
+        return {}
+    elseif type(authors) == "string" then
+        return { authors }
+    elseif type(authors) == "table" then
+        return authors
+    else
+        return {}
+    end
+end
+
+function MCPTools:getBookContext()
+    if not self.ui or not self.ui.document then
+        return nil
+    end
+
+    local doc = self.ui.document
+    local props = doc:getProps()
+    local current_page = doc:getCurrentPage()
+
+    local context = {
+        title = props.title or "Unknown",
+        authors = normalizeAuthors(props.authors),
+        current_page = current_page,
+        total_pages = doc:getPageCount(),
+    }
+
+    -- Get current chapter
+    if self.ui.toc and self.ui.toc.getTocTitleByPage then
+        local chapter = self.ui.toc:getTocTitleByPage(current_page)
+        if chapter and chapter ~= "" then
+            context.chapter = chapter
+        end
+    end
+
+    return context
+end
+
+function MCPTools:formatBookHeader(context)
+    if not context then return "" end
+
+    local header = ""
+    if context.title then
+        header = header .. "Book: " .. context.title
+    end
+    if context.authors and #context.authors > 0 then
+        header = header .. " by " .. table.concat(context.authors, ", ")
+    end
+    if context.chapter then
+        header = header .. "\nChapter: " .. context.chapter
+    end
+    header = header .. "\nPage " .. context.current_page .. " of " .. context.total_pages
+    return header .. "\n\n"
+end
+
+function MCPTools:getContextResourceRef()
+    return {
+        type = "resource",
+        resource = {
+            uri = "book://current/context",
+            mimeType = "application/json",
+        },
+    }
+end
+
 function MCPTools:list()
     local tools = {}
 
-    -- Get text from page range
+    -- Get current reading context (returns the book://current/context resource)
     table.insert(tools, {
-        name = "get_page_text",
+        name = "get_reading_context",
         description =
-        "Get text content from a specific page or range of pages. If no page is specified, returns the current page's text.",
+        "Get the current reading context including book metadata, current chapter, page text, and selection (if any). This is the primary way to understand what the user is currently reading.",
         inputSchema = {
             type = "object",
-            properties = {
-                start_page = {
-                    type = "number",
-                    description = "Starting page number (1-indexed). Defaults to current page if omitted.",
-                },
-                end_page = {
-                    type = "number",
-                    description = "Ending page number (optional, defaults to start_page)",
-                },
-            },
+            properties = {},
         },
     })
 
@@ -129,16 +191,6 @@ function MCPTools:list()
         },
     })
 
-    -- Get book outline/TOC
-    table.insert(tools, {
-        name = "get_toc",
-        description = "Get the table of contents for the current book",
-        inputSchema = {
-            type = "object",
-            properties = {},
-        },
-    })
-
     -- Navigate to page
     table.insert(tools, {
         name = "goto_page",
@@ -159,16 +211,6 @@ function MCPTools:list()
     table.insert(tools, {
         name = "get_selection",
         description = "Get the currently selected/highlighted text",
-        inputSchema = {
-            type = "object",
-            properties = {},
-        },
-    })
-
-    -- Get book info
-    table.insert(tools, {
-        name = "get_book_info",
-        description = "Get detailed information about the current book",
         inputSchema = {
             type = "object",
             properties = {},
@@ -222,18 +264,14 @@ function MCPTools:call(name, arguments)
     end
 
     -- Route to appropriate tool handler
-    if name == "get_page_text" then
-        return self:getPageText(arguments)
+    if name == "get_reading_context" then
+        return self:getReadingContext(arguments)
     elseif name == "search_book" then
         return self:searchBook(arguments)
-    elseif name == "get_toc" then
-        return self:getTOC(arguments)
     elseif name == "goto_page" then
         return self:gotoPage(arguments)
     elseif name == "get_selection" then
         return self:getSelection(arguments)
-    elseif name == "get_book_info" then
-        return self:getBookInfo(arguments)
     elseif name == "annotate" then
         return self:annotate(arguments)
     else
@@ -241,115 +279,12 @@ function MCPTools:call(name, arguments)
     end
 end
 
--- Helper function to extract text from text boxes structure
-local function extractTextFromBoxes(textBoxes)
-    if not textBoxes then return nil end
-
-    local lines = {}
-    for _, line in ipairs(textBoxes) do
-        local words = {}
-        if type(line) == "table" then
-            for _, word in ipairs(line) do
-                if type(word) == "table" and word.word then
-                    table.insert(words, word.word)
-                elseif type(word) == "string" then
-                    table.insert(words, word)
-                end
-            end
-        end
-        if #words > 0 then
-            table.insert(lines, table.concat(words, " "))
-        end
-    end
-
-    if #lines > 0 then
-        return table.concat(lines, "\n")
-    end
-    return nil
-end
-
-function MCPTools:getPageText(args)
-    local doc = self.ui.document
-    -- Default to current page if start_page is not provided
-    local startPage = tonumber(args.start_page) or doc:getCurrentPage()
-    local endPage = tonumber(args.end_page) or startPage
-
-    local pageCount = doc:getPageCount()
-    startPage = math.max(1, math.min(startPage, pageCount))
-    endPage = math.max(startPage, math.min(endPage, pageCount))
-
-    -- Limit range to 20 pages for safety
-    if endPage - startPage > 20 then
-        endPage = startPage + 20
-    end
-
-    local text = ""
-    local hasText = false
-    local locationInfo = nil
-
-    for page = startPage, endPage do
-        local pageText = nil
-        local pageStartXP = nil
-        local pageEndXP = nil
-
-        -- For reflowable documents (EPUB, etc.), try getTextFromXPointers first
-        -- This is the most reliable method for CRE documents
-        if not pageText and doc.getPageXPointer and doc.getTextFromXPointers then
-            local startXP = doc:getPageXPointer(page)
-            local endXP = nil
-            if page < pageCount then
-                endXP = doc:getPageXPointer(page + 1)
-            end
-            if startXP and endXP then
-                -- getTextFromXPointers returns text directly, not a table
-                pageText = doc:getTextFromXPointers(startXP, endXP, false)
-                pageStartXP = startXP
-                pageEndXP = endXP
-            elseif startXP then
-                -- For the last page, try getting text from the XPointer
-                -- using getTextFromXPointer which gets a paragraph
-                if doc.getTextFromXPointer then
-                    pageText = doc:getTextFromXPointer(startXP)
-                    pageStartXP = startXP
-                end
-            end
-        end
-
-        -- For paged documents (PDF, DjVu), try getPageTextBoxes
-        if not pageText and doc.getPageTextBoxes then
-            local textBoxes = doc:getPageTextBoxes(page)
-            pageText = extractTextFromBoxes(textBoxes)
-        end
-
-        -- Fallback: try the generic getPageText if available
-        if not pageText and doc.getPageText then
-            pageText = doc:getPageText(page)
-        end
-
-        if pageText and pageText ~= "" then
-            hasText = true
-            text = text .. "=== Page " .. page .. " ===\n" .. pageText .. "\n"
-            -- Add location info for each page (useful for annotation tool)
-            if pageStartXP then
-                text = text .. "Location: start=" .. tostring(pageStartXP)
-                if pageEndXP then
-                    text = text .. ", end=" .. tostring(pageEndXP)
-                end
-                text = text .. "\n"
-            end
-            text = text .. "\n"
-        else
-            text = text .. "=== Page " .. page .. " ===\n(No text available)\n\n"
-        end
-    end
-
-    if not hasText then
-        text = "Text extraction not available for this document type or no text found in the specified pages."
-    end
-
+function MCPTools:getReadingContext(args)
+    -- Return the reading context resource directly
+    -- This provides book metadata, current chapter, page text, and selection
     return {
         content = {
-            { type = "text", text = text },
+            self:getContextResourceRef(),
         },
     }
 end
@@ -384,7 +319,10 @@ function MCPTools:searchBook(args)
         local results = doc:findAllText(fuzzyPattern, case_insensitive, nb_context_words, max_hits, use_regex)
 
         if results and #results > 0 then
-            local resultText = "Found " .. #results .. " results:\n\n"
+            -- Add book context header
+            local bookContext = self:getBookContext()
+            local resultText = self:formatBookHeader(bookContext)
+            resultText = resultText .. "Found " .. #results .. " results:\n\n"
             for i, item in ipairs(results) do
                 -- Get page number
                 local pageno
@@ -424,6 +362,7 @@ function MCPTools:searchBook(args)
             return {
                 content = {
                     { type = "text", text = resultText },
+                    self:getContextResourceRef(),
                 },
             }
         else
@@ -439,31 +378,6 @@ function MCPTools:searchBook(args)
     return {
         content = {
             { type = "text", text = "Fulltext search is not available for this document type." },
-        },
-    }
-end
-
-function MCPTools:getTOC(args)
-    local doc = self.ui.document
-    local toc = doc:getToc()
-
-    if not toc or #toc == 0 then
-        return {
-            content = {
-                { type = "text", text = "No table of contents available for this book" },
-            },
-        }
-    end
-
-    local tocText = "Table of Contents:\n\n"
-    for _, item in ipairs(toc) do
-        local indent = string.rep("  ", item.depth or 0)
-        tocText = tocText .. indent .. item.title .. " (page " .. (item.page or "?") .. ")\n"
-    end
-
-    return {
-        content = {
-            { type = "text", text = tocText },
         },
     }
 end
@@ -504,7 +418,10 @@ function MCPTools:getSelection(args)
         local selected = self.ui.highlight.selected_text
         local text = selected.text
         if text and text ~= "" then
-            local response = "Selected text:\n\n" .. text
+            -- Add book context header
+            local bookContext = self:getBookContext()
+            local response = self:formatBookHeader(bookContext)
+            response = response .. "Selected text:\n\n" .. text
 
             -- Add location details if available for use with annotate tool
             if selected.pos0 and selected.pos1 then
@@ -521,6 +438,7 @@ function MCPTools:getSelection(args)
                         type = "text",
                         text = response,
                     },
+                    self:getContextResourceRef(),
                 },
             }
         end
@@ -529,38 +447,6 @@ function MCPTools:getSelection(args)
     return {
         content = {
             { type = "text", text = "No text is currently selected" },
-        },
-    }
-end
-
-function MCPTools:getBookInfo(args)
-    local doc = self.ui.document
-    local props = doc:getProps()
-
-    local info = {
-        title = props.title or "Unknown",
-        authors = props.authors or {},
-        language = props.language,
-        series = props.series,
-        description = props.description,
-        file = doc.file,
-        total_pages = doc:getPageCount(),
-        current_page = doc:getCurrentPage(),
-        format = doc.file:match("%.([^.]+)$"),
-    }
-
-    -- Get reading progress
-    local DocSettings = require("docsettings")
-    local doc_settings = DocSettings:open(doc.file)
-    if doc_settings then
-        info.percent_finished = doc_settings:readSetting("percent_finished") or 0
-    end
-
-    local infoText = rapidjson.encode(info, { pretty = true })
-
-    return {
-        content = {
-            { type = "text", text = infoText },
         },
     }
 end
