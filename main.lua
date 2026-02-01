@@ -614,6 +614,11 @@ function MCP:scheduleResourceChangeCheck()
     end
 
     shared_state.resource_check_task = function()
+        -- Check running state to avoid race conditions during teardown
+        if not shared_state.server_running then
+            return
+        end
+        
         -- Check for resource changes and send notifications
         if shared_state.protocol then
             shared_state.protocol:checkAndNotifyResourceChanges()

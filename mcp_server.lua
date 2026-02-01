@@ -12,15 +12,13 @@ local MCPServer = {
     port = 8788,  -- Default port for MCP server
     server = nil,
     running = false,
-    _message_queue = {},  -- Queue for server-initiated messages (notifications/requests)
-    _pending_server_requests = {},  -- Map of request ID to callback for server-initiated requests
-    _next_request_id = 1,  -- Counter for generating unique request IDs
 }
 
 function MCPServer:new(o)
     o = o or {}
     setmetatable(o, self)
     self.__index = self
+    -- Initialize instance-specific tables
     o._message_queue = {}
     o._pending_server_requests = {}
     o._next_request_id = 1
