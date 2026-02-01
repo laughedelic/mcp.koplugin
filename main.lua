@@ -56,6 +56,7 @@ local shared_state = {
     last_interaction_time = nil, -- timestamp of last MCP interaction
     idle_check_task = nil,       -- scheduled idle check function
     idle_warning_widget = nil,   -- reference to the warning notification widget
+    resource_check_task = nil,   -- scheduled resource change check
 }
 
 local MCP = WidgetContainer:extend {
@@ -89,6 +90,17 @@ function MCP:init()
         shared_state.protocol:setClientFeatures(shared_state.clientFeatures)
         shared_state.tools:setResources(shared_state.resources)
         shared_state.prompts:setResources(shared_state.resources)
+
+        -- Set up resource notification callback
+        shared_state.resources:setNotifyCallback(function(notification_type, uri)
+            if shared_state.clientFeatures then
+                if notification_type == "updated" then
+                    shared_state.clientFeatures:notifyResourceUpdated(uri)
+                elseif notification_type == "list_changed" then
+                    shared_state.clientFeatures:notifyResourceListChanged()
+                end
+            end
+        end)
 
         -- Configure relay
         shared_state.relay:setRelayUrl(G_reader_settings:readSetting("mcp_relay_url", DEFAULT_RELAY_URL))
@@ -522,6 +534,13 @@ function MCP:startLocalServer(silent)
     -- Start idle timeout checking
     self:scheduleIdleCheck()
 
+    -- Start resource change checking
+    self:scheduleResourceCheck()
+
+    -- Note: Local mode doesn't currently support server-initiated notifications
+    -- as HTTP is request/response only. Notifications would require SSE or WebSocket.
+    -- For now, resource changes are tracked but notifications are only sent in remote mode.
+
     -- Show notification only if not in silent mode
     if not silent then
         local ip = shared_state.server:getLocalIP()
@@ -579,6 +598,7 @@ function MCP:stopServer()
     -- Stop idle checking
     self:cancelIdleCheck()
     self:cancelIdleWarning()
+    self:cancelResourceCheck()
     shared_state.last_interaction_time = nil
 
     UIManager:show(Notification:new {
@@ -605,6 +625,41 @@ function MCP:schedulePoll()
     end
 
     UIManager:scheduleIn(0.05, shared_state.poll_task)
+end
+
+-- Schedule periodic resource change checking (for subscriptions)
+function MCP:scheduleResourceCheck()
+    -- Cancel any existing resource check
+    self:cancelResourceCheck()
+
+    if not shared_state.server_running then
+        return
+    end
+
+    local check_interval = 1 -- Check every second
+
+    shared_state.resource_check_task = function()
+        if not shared_state.server_running then
+            return
+        end
+
+        -- Only check if there are subscriptions
+        if shared_state.resources and shared_state.resources:hasSubscriptions() then
+            shared_state.resources:checkForChanges()
+        end
+
+        -- Schedule next check
+        UIManager:scheduleIn(check_interval, shared_state.resource_check_task)
+    end
+
+    UIManager:scheduleIn(check_interval, shared_state.resource_check_task)
+end
+
+function MCP:cancelResourceCheck()
+    if shared_state.resource_check_task then
+        UIManager:unschedule(shared_state.resource_check_task)
+        shared_state.resource_check_task = nil
+    end
 end
 
 -- Cloud Relay management
@@ -657,6 +712,9 @@ function MCP:startRelay(show_notification)
 
         -- Start idle timeout checking
         self:scheduleIdleCheck()
+
+        -- Start resource change checking
+        self:scheduleResourceCheck()
 
         if show_notification then
             UIManager:show(Notification:new {

@@ -36,6 +36,8 @@ local MCPResources = {
         selection_text = nil,
         document_file = nil,
     },
+    -- Callback for sending notifications to client
+    onNotify = nil,
 }
 
 function MCPResources:new(o)
@@ -48,11 +50,31 @@ function MCPResources:new(o)
         selection_text = nil,
         document_file = nil,
     }
+    o.onNotify = nil
     return o
 end
 
 function MCPResources:setUI(ui)
     self.ui = ui
+end
+
+-- Set callback for sending notifications
+-- callback(type, data) where type is "updated" or "list_changed"
+function MCPResources:setNotifyCallback(callback)
+    self.onNotify = callback
+end
+
+-- Internal: send notification if callback is set
+function MCPResources:_notifyUpdated(uri)
+    if self.onNotify then
+        self.onNotify("updated", uri)
+    end
+end
+
+function MCPResources:_notifyListChanged()
+    if self.onNotify then
+        self.onNotify("list_changed", nil)
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -745,10 +767,18 @@ function MCPResources:getSubscriptions()
     return uris
 end
 
--- Check if any subscribed resources have changed
--- Returns list of changed URIs
+function MCPResources:hasSubscriptions()
+    for _ in pairs(self.subscriptions) do
+        return true
+    end
+    return false
+end
+
+-- Check if any subscribed resources have changed and send notifications
+-- Returns list of changed URIs (also sends notifications via callback)
 function MCPResources:checkForChanges()
     local changed = {}
+    local list_changed = false
 
     if not self.ui or not self.ui.document then
         -- Document closed - check if it was open before
@@ -762,13 +792,25 @@ function MCPResources:checkForChanges()
                     table.insert(changed, uri)
                 end
             end
+            -- Resource list has changed (book resources no longer available)
+            list_changed = true
         end
+
+        -- Send notifications for all changed resources
+        for _, uri in ipairs(changed) do
+            self:_notifyUpdated(uri)
+        end
+        if list_changed then
+            self:_notifyListChanged()
+        end
+
         return changed
     end
 
     -- Check document change
     local current_file = self.ui.document.file
     if current_file ~= self._cache.document_file then
+        local was_nil = self._cache.document_file == nil
         self._cache.document_file = current_file
         self._cache.current_page = nil
         self._cache.selection_text = nil
@@ -778,6 +820,19 @@ function MCPResources:checkForChanges()
                 table.insert(changed, uri)
             end
         end
+        -- Resource list changed (new book opened)
+        if was_nil then
+            list_changed = true
+        end
+
+        -- Send notifications
+        for _, uri in ipairs(changed) do
+            self:_notifyUpdated(uri)
+        end
+        if list_changed then
+            self:_notifyListChanged()
+        end
+
         return changed
     end
 
@@ -810,6 +865,11 @@ function MCPResources:checkForChanges()
                 table.insert(changed, "book://current/context")
             end
         end
+    end
+
+    -- Send notifications for changed resources
+    for _, uri in ipairs(changed) do
+        self:_notifyUpdated(uri)
     end
 
     return changed
