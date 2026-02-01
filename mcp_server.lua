@@ -397,7 +397,7 @@ function MCPServer:handleServerResponse(response_data)
 end
 
 -- Generate next unique request ID
--- Note: Thread-safe in Lua's single-threaded event loop (used by KOReader)
+-- Note: Safe for KOReader's single-threaded event loop with cooperative multitasking
 function MCPServer:getNextRequestId()
     local id = self._next_request_id
     self._next_request_id = self._next_request_id + 1
