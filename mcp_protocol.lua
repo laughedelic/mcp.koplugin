@@ -17,6 +17,7 @@ local MCPProtocol = {
     resources = nil,
     tools = nil,
     initialized = false,
+    transport = nil,  -- Reference to MCPServer or MCPRelay for bidirectional communication
 }
 
 function MCPProtocol:new(o)
@@ -24,6 +25,10 @@ function MCPProtocol:new(o)
     setmetatable(o, self)
     self.__index = self
     return o
+end
+
+function MCPProtocol:setTransport(transport)
+    self.transport = transport
 end
 
 function MCPProtocol:setResources(resources)
@@ -361,6 +366,38 @@ function MCPProtocol:createNotificationResponse()
         headers = {},
         body = "",
     }
+end
+
+-- Send a notification about resource changes
+function MCPProtocol:notifyResourcesUpdated(uris)
+    if not self.transport or not self.initialized then
+        logger.dbg("MCP Protocol: Cannot send notification - no transport or not initialized")
+        return false
+    end
+
+    local notification = {
+        jsonrpc = "2.0",
+        method = "notifications/resources/updated",
+        params = {
+            uris = uris
+        }
+    }
+
+    logger.dbg("MCP Protocol: Sending resources updated notification for", #uris, "URIs")
+    return self.transport:sendNotification(notification)
+end
+
+-- Check for resource changes and send notifications if needed
+function MCPProtocol:checkAndNotifyResourceChanges()
+    if not self.resources then
+        return
+    end
+
+    local changed = self.resources:checkForChanges()
+    if #changed > 0 then
+        logger.dbg("MCP Protocol: Detected", #changed, "changed resources")
+        self:notifyResourcesUpdated(changed)
+    end
 end
 
 return MCPProtocol

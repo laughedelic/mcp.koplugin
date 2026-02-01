@@ -6,6 +6,7 @@
 
 local socket = require("socket")
 local logger = require("logger")
+local json = require("json")
 
 local MCPServer = {
     port = 8788,  -- Default port for MCP server
@@ -17,6 +18,10 @@ function MCPServer:new(o)
     o = o or {}
     setmetatable(o, self)
     self.__index = self
+    -- Initialize instance-specific tables
+    o._message_queue = {}
+    o._pending_server_requests = {}
+    o._next_request_id = 1
     return o
 end
 
@@ -148,7 +153,13 @@ function MCPServer:pollOnce()
         body = ""
     }
 
-    if self.onRequest then
+    -- Check if this is a poll request
+    if request.path == "/poll" then
+        response = self:handlePollRequest(request)
+    elseif request.path == "/response" and request.method == "POST" then
+        -- Client responding to a server-initiated request
+        response = self:handleResponsePost(request)
+    elseif self.onRequest then
         local ok, result = pcall(self.onRequest, request)
         if ok and result then
             response = result
@@ -249,6 +260,62 @@ function MCPServer:sendResponse(client, response)
     client:send(resp)
 end
 
+-- Handle poll request from client (long-polling for server-initiated messages)
+function MCPServer:handlePollRequest(request)
+    -- Check if there are any queued messages
+    if #self._message_queue > 0 then
+        local message = table.remove(self._message_queue, 1)
+        logger.dbg("MCP Server: Returning queued message from poll")
+        return {
+            status = 200,
+            statusText = "OK",
+            headers = {},
+            body = json.encode(message)
+        }
+    else
+        -- No messages, return 204 No Content
+        logger.dbg("MCP Server: Poll returned 204 (no messages)")
+        return {
+            status = 204,
+            statusText = "No Content",
+            headers = {},
+            body = ""
+        }
+    end
+end
+
+-- Handle response from client to a server-initiated request
+function MCPServer:handleResponsePost(request)
+    local ok, response_data = pcall(json.decode, request.body)
+    if not ok or not response_data then
+        logger.warn("MCP Server: Failed to parse response data")
+        return {
+            status = 400,
+            statusText = "Bad Request",
+            headers = {},
+            body = "Invalid JSON"
+        }
+    end
+
+    if response_data.type == "server_response" and response_data.requestId then
+        self:handleServerResponse(response_data)
+        return {
+            status = 200,
+            statusText = "OK",
+            headers = {},
+            body = ""
+        }
+    else
+        logger.warn("MCP Server: Invalid response data type")
+        return {
+            status = 400,
+            statusText = "Bad Request",
+            headers = {},
+            body = "Invalid response type"
+        }
+    end
+end
+
 function MCPServer:getLocalIP()
     -- Get local IP by creating a UDP connection (no data sent)
     local udp = socket.udp()
@@ -256,6 +323,85 @@ function MCPServer:getLocalIP()
     local ip, _ = udp:getsockname()
     udp:close()
     return ip
+end
+
+-- Send a notification to the client (server-initiated, no response expected)
+-- notification: a JSON-RPC 2.0 notification object
+function MCPServer:sendNotification(notification)
+    if not self.running then
+        logger.dbg("MCP Server: Cannot send notification - not running")
+        return false
+    end
+
+    logger.dbg("MCP Server: Queuing notification:", notification.method)
+    
+    local message = {
+        type = "notification",
+        body = json.encode(notification),
+    }
+    
+    table.insert(self._message_queue, message)
+    return true
+end
+
+-- Send a request to the client (server-initiated, expects response)
+-- request: a JSON-RPC 2.0 request object with id
+-- callback: function(response) called when client responds
+function MCPServer:sendRequest(request, callback)
+    if not self.running then
+        logger.dbg("MCP Server: Cannot send request - not running")
+        if callback then
+            callback(nil, "Not running")
+        end
+        return false
+    end
+
+    logger.dbg("MCP Server: Queuing server request:", request.method, "id:", request.id)
+
+    -- Store callback for when we get response
+    if callback then
+        self._pending_server_requests[tostring(request.id)] = callback
+    end
+
+    local message = {
+        type = "server_request",
+        requestId = tostring(request.id),
+        body = json.encode(request),
+    }
+    
+    table.insert(self._message_queue, message)
+    return true
+end
+
+-- Handle a response to a server-initiated request
+-- response_data: { type: "server_response", requestId: string, body: string }
+function MCPServer:handleServerResponse(response_data)
+    local request_id = tostring(response_data.requestId)
+    logger.dbg("MCP Server: Received server response for request", request_id)
+
+    local callback = self._pending_server_requests[request_id]
+
+    if callback then
+        self._pending_server_requests[request_id] = nil
+
+        -- Parse the response body
+        local ok, response = pcall(json.decode, response_data.body or "{}")
+        if ok then
+            callback(response)
+        else
+            callback(nil, "Failed to parse response")
+        end
+    else
+        logger.warn("MCP Server: No callback for server response", request_id)
+    end
+end
+
+-- Generate next unique request ID
+-- Note: Safe for KOReader's single-threaded event loop with cooperative multitasking
+function MCPServer:getNextRequestId()
+    local id = self._next_request_id
+    self._next_request_id = self._next_request_id + 1
+    return id
 end
 
 return MCPServer
