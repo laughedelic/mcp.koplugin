@@ -186,6 +186,13 @@ function MCPTools:list()
                 },
             },
         },
+        -- Tool annotations for client decision-making
+        annotations = {
+            readOnlyHint = true,     -- Does not modify any data
+            destructiveHint = false, -- No data is destroyed
+            idempotentHint = true,   -- Same result if called multiple times
+            openWorldHint = false,   -- Only accesses local book data
+        },
     })
 
     -- Get book metadata (for clients that don't support resources)
@@ -196,6 +203,12 @@ function MCPTools:list()
         inputSchema = {
             type = "object",
             properties = {},
+        },
+        annotations = {
+            readOnlyHint = true,
+            destructiveHint = false,
+            idempotentHint = true,
+            openWorldHint = false,
         },
     })
 
@@ -218,6 +231,12 @@ function MCPTools:list()
                 },
             },
         },
+        annotations = {
+            readOnlyHint = true,
+            destructiveHint = false,
+            idempotentHint = true,
+            openWorldHint = false,
+        },
     })
 
     -- Search in book
@@ -238,6 +257,12 @@ function MCPTools:list()
             },
             required = { "query" },
         },
+        annotations = {
+            readOnlyHint = true,
+            destructiveHint = false,
+            idempotentHint = true, -- Same search returns same results
+            openWorldHint = false,
+        },
     })
 
     -- Navigate to page
@@ -253,6 +278,12 @@ function MCPTools:list()
                 },
             },
             required = { "page" },
+        },
+        annotations = {
+            readOnlyHint = false,    -- Changes the current view state
+            destructiveHint = false, -- No data is destroyed
+            idempotentHint = true,   -- Going to page N multiple times has same result
+            openWorldHint = false,
         },
     })
 
@@ -283,6 +314,12 @@ function MCPTools:list()
                     description = "Optional: End position (XPointer) from search_book results.",
                 },
             },
+        },
+        annotations = {
+            readOnlyHint = false,    -- Creates data (annotations)
+            destructiveHint = false, -- Does not delete existing data
+            idempotentHint = false,  -- Calling multiple times creates multiple annotations
+            openWorldHint = false,
         },
     })
 
