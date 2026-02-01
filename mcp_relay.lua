@@ -571,6 +571,10 @@ function MCPRelay:handlePollResponse(response_body)
     -- Handle the request
     if request_data.type == "request" and request_data.requestId then
         self:handleRelayedRequest(request_data)
+    elseif request_data.type == "server_response" and request_data.requestId then
+        -- Response to a server-initiated request
+        self:handleServerResponse(request_data)
+        self:scheduleNextPoll()
     elseif request_data.type == "ping" then
         -- Ping from server means connection is healthy, but no real request
         -- Don't count as "empty" since it's just a keep-alive
@@ -581,6 +585,29 @@ function MCPRelay:handlePollResponse(response_body)
         -- Unknown request type, just schedule next poll
         logger.dbg("MCP Relay: Unknown response type:", request_data.type)
         self:scheduleNextPoll()
+    end
+end
+
+-- Handle a response to a server-initiated request
+function MCPRelay:handleServerResponse(response_data)
+    local request_id = tostring(response_data.requestId)
+    logger.dbg("MCP Relay: Received server response for request", request_id)
+
+    self._pending_server_requests = self._pending_server_requests or {}
+    local callback = self._pending_server_requests[request_id]
+
+    if callback then
+        self._pending_server_requests[request_id] = nil
+
+        -- Parse the response body
+        local ok, response = pcall(json.decode, response_data.body or "{}")
+        if ok then
+            callback(response)
+        else
+            callback(nil, "Failed to parse response")
+        end
+    else
+        logger.warn("MCP Relay: No callback for server response", request_id)
     end
 end
 
@@ -685,6 +712,80 @@ function MCPRelay:sendPong()
     self:httpPost(pong_url, json.encode({ type = "pong" }), function(resp)
         -- Pong sent, no need to handle response
     end)
+end
+
+-- Send a notification to the client (server-initiated message)
+-- notification: a JSON-RPC 2.0 notification object
+function MCPRelay:sendNotification(notification)
+    if not self.running or not self.connected then
+        logger.dbg("MCP Relay: Cannot send notification - not connected")
+        return false
+    end
+
+    local notify_url = self.relay_url .. "/" .. self.device_id .. "/notify"
+
+    local payload = json.encode({
+        type = "notification",
+        body = json.encode(notification),
+    })
+
+    logger.dbg("MCP Relay: Sending notification:", notification.method)
+
+    self:httpPost(notify_url, payload, function(resp)
+        if not resp or resp.code ~= 200 then
+            logger.warn("MCP Relay: Failed to send notification:", resp and resp.code)
+        else
+            logger.dbg("MCP Relay: Notification sent successfully")
+        end
+    end)
+
+    return true
+end
+
+-- Send a request to the client (server-initiated, expects response)
+-- request: a JSON-RPC 2.0 request object with id
+-- callback: function(response) called when client responds
+function MCPRelay:sendRequest(request, callback)
+    if not self.running or not self.connected then
+        logger.dbg("MCP Relay: Cannot send request - not connected")
+        if callback then
+            callback(nil, "Not connected")
+        end
+        return false
+    end
+
+    local req_url = self.relay_url .. "/" .. self.device_id .. "/request"
+
+    local payload = json.encode({
+        type = "server_request",
+        requestId = tostring(request.id),
+        body = json.encode(request),
+    })
+
+    logger.dbg("MCP Relay: Sending server request:", request.method, "id:", request.id)
+
+    -- Store callback for when we get response
+    self._pending_server_requests = self._pending_server_requests or {}
+    if callback then
+        self._pending_server_requests[tostring(request.id)] = callback
+    end
+
+    self:httpPost(req_url, payload, function(resp)
+        if not resp or resp.code ~= 200 then
+            logger.warn("MCP Relay: Failed to send server request:", resp and resp.code)
+            -- Call callback with error
+            local cb = self._pending_server_requests[tostring(request.id)]
+            if cb then
+                self._pending_server_requests[tostring(request.id)] = nil
+                cb(nil, "Failed to send request")
+            end
+        else
+            logger.dbg("MCP Relay: Server request sent, awaiting response")
+            -- Response will come through the poll mechanism
+        end
+    end)
+
+    return true
 end
 
 -- Handle disconnection
