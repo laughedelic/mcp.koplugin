@@ -625,6 +625,7 @@ function MCP:scheduleResourceChangeCheck()
         end
 
         -- Schedule next check (check every 0.5 seconds for reasonable responsiveness)
+        -- This interval balances battery life with timely notifications on e-reader devices
         if shared_state.server_running then
             UIManager:scheduleIn(0.5, shared_state.resource_check_task)
         end
