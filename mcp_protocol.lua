@@ -16,7 +16,12 @@ local MCPProtocol = {
     capabilities = {},
     resources = nil,
     tools = nil,
+    prompts = nil,
+    clientFeatures = nil, -- For sampling, elicitation, logging
     initialized = false,
+
+    -- Callback for sending notifications/requests to client
+    sendToClient = nil,
 }
 
 function MCPProtocol:new(o)
@@ -46,6 +51,20 @@ function MCPProtocol:setPrompts(prompts)
     self.capabilities.prompts = {
         listChanged = false,
     }
+end
+
+function MCPProtocol:setClientFeatures(clientFeatures)
+    self.clientFeatures = clientFeatures
+    -- Server declares logging capability
+    self.capabilities.logging = {}
+end
+
+-- Set callback for sending messages to client (notifications, requests)
+function MCPProtocol:setSendCallback(callback)
+    self.sendToClient = callback
+    if self.clientFeatures then
+        self.clientFeatures:setSendCallback(callback)
+    end
 end
 
 function MCPProtocol:handleRequest(request)
@@ -86,6 +105,8 @@ function MCPProtocol:handleRequest(request)
         return self:createNotificationResponse()
     elseif method == "ping" then
         return self:handlePing(id)
+    elseif method == "logging/setLevel" then
+        return self:handleLoggingSetLevel(id, params)
     elseif method == "resources/list" then
         return self:handleResourcesList(id, params)
     elseif method == "resources/read" then
@@ -112,6 +133,12 @@ end
 function MCPProtocol:handleInitialize(id, params)
     logger.info("MCP Initialize request from:", params.clientInfo and params.clientInfo.name or "unknown")
 
+    -- Store client capabilities for client features
+    if self.clientFeatures and params.capabilities then
+        self.clientFeatures:setClientCapabilities(params.capabilities)
+        logger.dbg("MCP: Client capabilities:", rapidjson.encode(params.capabilities))
+    end
+
     local result = {
         protocolVersion = self.version,
         capabilities = self.capabilities,
@@ -122,6 +149,22 @@ function MCPProtocol:handleInitialize(id, params)
 end
 
 function MCPProtocol:handlePing(id)
+    return self:createSuccessResponse(id, {})
+end
+
+function MCPProtocol:handleLoggingSetLevel(id, params)
+    local level = params.level
+    if not level then
+        return self:createErrorResponse(id, -32602, "Invalid params: missing level")
+    end
+
+    if self.clientFeatures then
+        local ok, err = self.clientFeatures:setLogLevel(level)
+        if not ok then
+            return self:createErrorResponse(id, -32602, err)
+        end
+    end
+
     return self:createSuccessResponse(id, {})
 end
 
@@ -361,6 +404,112 @@ function MCPProtocol:createNotificationResponse()
         headers = {},
         body = "",
     }
+end
+
+--------------------------------------------------------------------------------
+-- Server → Client Notifications
+--------------------------------------------------------------------------------
+
+-- Send a resource update notification
+function MCPProtocol:notifyResourceUpdated(uri)
+    if self.clientFeatures then
+        self.clientFeatures:notifyResourceUpdated(uri)
+    end
+end
+
+-- Send a resource list changed notification
+function MCPProtocol:notifyResourceListChanged()
+    if self.clientFeatures then
+        self.clientFeatures:notifyResourceListChanged()
+    end
+end
+
+-- Send a progress notification
+function MCPProtocol:notifyProgress(progressToken, progress, total, message)
+    if self.clientFeatures then
+        self.clientFeatures:notifyProgress(progressToken, progress, total, message)
+    end
+end
+
+-- Log a message to the client
+function MCPProtocol:log(level, loggerName, data)
+    if self.clientFeatures then
+        self.clientFeatures:log(level, loggerName, data)
+    end
+end
+
+--------------------------------------------------------------------------------
+-- Server → Client Requests (via clientFeatures)
+--------------------------------------------------------------------------------
+
+-- Request sampling from the client
+function MCPProtocol:requestSampling(options, callback)
+    if self.clientFeatures then
+        return self.clientFeatures:requestSampling(options, callback)
+    else
+        if callback then callback(nil, "Client features not available") end
+    end
+end
+
+-- Simple ask helper
+function MCPProtocol:ask(prompt, callback)
+    if self.clientFeatures then
+        return self.clientFeatures:ask(prompt, callback)
+    else
+        if callback then callback(nil, "Client features not available") end
+    end
+end
+
+-- Request form elicitation
+function MCPProtocol:requestFormElicitation(options, callback)
+    if self.clientFeatures then
+        return self.clientFeatures:requestFormElicitation(options, callback)
+    else
+        if callback then callback(nil, "Client features not available") end
+    end
+end
+
+-- Request user confirmation
+function MCPProtocol:confirm(message, callback)
+    if self.clientFeatures then
+        return self.clientFeatures:confirm(message, callback)
+    else
+        if callback then callback(false, "Client features not available") end
+    end
+end
+
+-- Request text input
+function MCPProtocol:requestText(message, options, callback)
+    if self.clientFeatures then
+        return self.clientFeatures:requestText(message, options, callback)
+    else
+        if callback then callback(nil, "Client features not available") end
+    end
+end
+
+-- Request choice from options
+function MCPProtocol:requestChoice(message, options, callback)
+    if self.clientFeatures then
+        return self.clientFeatures:requestChoice(message, options, callback)
+    else
+        if callback then callback(nil, "Client features not available") end
+    end
+end
+
+-- Handle response from client (for pending sampling/elicitation requests)
+function MCPProtocol:handleClientResponse(response)
+    if self.clientFeatures then
+        return self.clientFeatures:handleResponse(response)
+    end
+    return false
+end
+
+-- Handle notification from client
+function MCPProtocol:handleClientNotification(notification)
+    if self.clientFeatures then
+        return self.clientFeatures:handleNotification(notification)
+    end
+    return false
 end
 
 return MCPProtocol
