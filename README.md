@@ -123,15 +123,14 @@ The plugin exposes these resources:
 
 The plugin provides these callable tools:
 
-| Tool            | Description                                                                       | Parameters                                                           |
-| --------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `get_page_text` | Get text from specific page(s)                                                    | `start_page`, `end_page` (optional)                                  |
-| `search_book`   | Search for text in the book                                                       | `query`, `case_sensitive` (optional)                                 |
-| `get_toc`       | Get table of contents                                                             | None                                                                 |
-| `goto_page`     | Navigate to a specific page                                                       | `page`                                                               |
-| `get_selection` | Get currently selected text with location info                                    | None                                                                 |
-| `get_book_info` | Get detailed book information                                                     | None                                                                 |
-| `add_note`      | Add highlight or note to selected text (highlight only if `note` arg is omitted) | `note` (optional), `text` (optional), `pos0` (optional), `pos1` (optional) |
+| Tool                  | Description                                                                  | Parameters                                                                 |
+| --------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `get_reading_context` | Get current reading context (book, chapter, page, selection/highlight focus) | `extra_pages_before` (optional), `extra_pages_after` (optional)            |
+| `get_book_metadata`   | Get full book metadata (for clients without resource support)                | None                                                                       |
+| `read_pages`          | Read text from specific pages or chapters                                    | `pages` (e.g., "5" or "10-15"), `chapter` (index)                          |
+| `search_book`         | Search for text in the book                                                  | `query`, `case_sensitive` (optional)                                       |
+| `goto_page`           | Navigate to a specific page                                                  | `page`                                                                     |
+| `annotate`            | Add highlight or note to text                                                | `note` (optional), `text` (optional), `start` (optional), `end` (optional) |
 
 
 ## Local & Remote Modes

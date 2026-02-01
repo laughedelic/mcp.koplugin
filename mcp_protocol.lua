@@ -8,7 +8,7 @@ local rapidjson = require("rapidjson")
 local logger = require("logger")
 
 local MCPProtocol = {
-    version = "2025-03-26",  -- MCP protocol version
+    version = "2025-03-26", -- MCP protocol version
     serverInfo = {
         name = "koreader-mcp",
         version = "1.0.0",
@@ -29,8 +29,8 @@ end
 function MCPProtocol:setResources(resources)
     self.resources = resources
     self.capabilities.resources = {
-        subscribe = false,
-        listChanged = false,
+        subscribe = true,
+        listChanged = true,
     }
 end
 
@@ -83,6 +83,12 @@ function MCPProtocol:handleRequest(request)
         return self:handleResourcesList(id, params)
     elseif method == "resources/read" then
         return self:handleResourcesRead(id, params)
+    elseif method == "resources/templates/list" then
+        return self:handleResourcesTemplatesList(id, params)
+    elseif method == "resources/subscribe" then
+        return self:handleResourcesSubscribe(id, params)
+    elseif method == "resources/unsubscribe" then
+        return self:handleResourcesUnsubscribe(id, params)
     elseif method == "tools/list" then
         return self:handleToolsList(id, params)
     elseif method == "tools/call" then
@@ -149,6 +155,67 @@ function MCPProtocol:handleResourcesRead(id, params)
     end
 
     return self:createSuccessResponse(id, { contents = result })
+end
+
+function MCPProtocol:handleResourcesTemplatesList(id, params)
+    if not self.resources then
+        return self:createErrorResponse(id, -32603, "Resources not available")
+    end
+
+    local ok, result = pcall(function()
+        return self.resources:listTemplates()
+    end)
+
+    if not ok then
+        logger.err("Error listing resource templates:", result)
+        return self:createErrorResponse(id, -32603, "Internal error")
+    end
+
+    return self:createSuccessResponse(id, { resourceTemplates = result or {} })
+end
+
+function MCPProtocol:handleResourcesSubscribe(id, params)
+    if not self.resources then
+        return self:createErrorResponse(id, -32603, "Resources not available")
+    end
+
+    local uri = params.uri
+    if not uri then
+        return self:createErrorResponse(id, -32602, "Invalid params: missing uri")
+    end
+
+    local ok, result = pcall(function()
+        return self.resources:subscribe(uri)
+    end)
+
+    if not ok then
+        logger.err("Error subscribing to resource:", result)
+        return self:createErrorResponse(id, -32603, "Internal error")
+    end
+
+    return self:createSuccessResponse(id, {})
+end
+
+function MCPProtocol:handleResourcesUnsubscribe(id, params)
+    if not self.resources then
+        return self:createErrorResponse(id, -32603, "Resources not available")
+    end
+
+    local uri = params.uri
+    if not uri then
+        return self:createErrorResponse(id, -32602, "Invalid params: missing uri")
+    end
+
+    local ok, result = pcall(function()
+        return self.resources:unsubscribe(uri)
+    end)
+
+    if not ok then
+        logger.err("Error unsubscribing from resource:", result)
+        return self:createErrorResponse(id, -32603, "Internal error")
+    end
+
+    return self:createSuccessResponse(id, {})
 end
 
 function MCPProtocol:handleToolsList(id, params)
@@ -222,7 +289,7 @@ function MCPProtocol:createErrorResponse(id, code, message)
     }
 
     return {
-        status = 200,  -- JSON-RPC errors still use HTTP 200
+        status = 200, -- JSON-RPC errors still use HTTP 200
         statusText = "OK",
         headers = {},
         body = rapidjson.encode(response),
