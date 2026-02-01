@@ -49,6 +49,7 @@ local shared_state = {
     relay_url = nil,
     poll_task = nil,
     relay_poll_task = nil,
+    resource_check_task = nil,  -- scheduled resource change check function
     last_interaction_time = nil, -- timestamp of last MCP interaction
     idle_check_task = nil,       -- scheduled idle check function
     idle_warning_widget = nil,   -- reference to the warning notification widget
@@ -506,8 +507,14 @@ function MCP:startLocalServer(silent)
     shared_state.local_http_running = true
     shared_state.last_interaction_time = os.time()
 
+    -- Set transport for bidirectional communication
+    shared_state.protocol:setTransport(shared_state.server)
+
     -- Start polling for requests
     self:schedulePoll()
+
+    -- Start resource change monitoring
+    self:scheduleResourceChangeCheck()
 
     -- Start idle timeout checking
     self:scheduleIdleCheck()
@@ -563,6 +570,12 @@ function MCP:stopServer()
     -- Mark MCP server as stopped
     shared_state.server_running = false
 
+    -- Stop resource change checking
+    if shared_state.resource_check_task then
+        UIManager:unschedule(shared_state.resource_check_task)
+        shared_state.resource_check_task = nil
+    end
+
     -- Stop idle checking
     self:cancelIdleCheck()
     self:cancelIdleWarning()
@@ -594,6 +607,27 @@ function MCP:schedulePoll()
     UIManager:scheduleIn(0.05, shared_state.poll_task)
 end
 
+-- Schedule periodic checks for resource changes
+function MCP:scheduleResourceChangeCheck()
+    if not shared_state.server_running then
+        return
+    end
+
+    shared_state.resource_check_task = function()
+        -- Check for resource changes and send notifications
+        if shared_state.protocol then
+            shared_state.protocol:checkAndNotifyResourceChanges()
+        end
+
+        -- Schedule next check (check every 0.5 seconds for reasonable responsiveness)
+        if shared_state.server_running then
+            UIManager:scheduleIn(0.5, shared_state.resource_check_task)
+        end
+    end
+
+    UIManager:scheduleIn(0.5, shared_state.resource_check_task)
+end
+
 -- Cloud Relay management
 -- @param show_notification boolean: if true, show startup notification
 function MCP:startRelay(show_notification)
@@ -616,6 +650,12 @@ function MCP:startRelay(show_notification)
         shared_state.server_running = true
         shared_state.relay_running = true
         shared_state.last_interaction_time = os.time()
+
+        -- Set transport for bidirectional communication
+        shared_state.protocol:setTransport(shared_state.relay)
+
+        -- Start resource change monitoring
+        self:scheduleResourceChangeCheck()
 
         -- Start idle timeout checking
         self:scheduleIdleCheck()
