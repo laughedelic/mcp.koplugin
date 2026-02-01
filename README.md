@@ -12,7 +12,12 @@ The Model Context Protocol (MCP) is an open standard that enables AI assistants 
 
 - **Book Content Access**: AI assistants can read your current book's content at different scopes (current page, chapter, specific page ranges)
 - **Metadata Retrieval**: Access book metadata including title, author, reading progress, and statistics
-- **Interactive Tools**: Search within books, navigate to pages, get table of contents
+- **Interactive Tools**: Search within books, navigate to pages, get table of contents, add highlights and notes
+- **Resource Subscriptions**: Subscribe to resources and receive automatic notifications when they change (page turns, book changes)
+- **Client Features** (MCP 2025-03-26): 
+  - **Sampling**: Server can request LLM completions from the client
+  - **Elicitation**: Server can request user input (confirmations, text input, choices)
+  - **Logging**: Server can send log messages to the client
 - **Secure Local Network**: Server binds to your local network only
 - **Cloud Relay**: Access your e-reader from anywhere via a cloud relay
 
@@ -111,13 +116,23 @@ Assistant will use the MCP resources and tools to understand which book you're r
 
 The plugin exposes these resources:
 
-| Resource URI                | Description                                    |
-| --------------------------- | ---------------------------------------------- |
-| `book://current/metadata`   | Book metadata (title, author, progress, etc.)  |
-| `book://current/page`       | Current page text content                      |
-| `book://current/text`       | Broader textual context (limited to 100 pages) |
-| `book://current/toc`        | Table of contents                              |
-| `book://current/statistics` | Reading statistics and progress                |
+#### Current Book Resources
+| Resource URI                    | Description                                    |
+| ------------------------------- | ---------------------------------------------- |
+| `book://current/context`        | Current reading context (page, chapter, selection) |
+| `book://current/metadata`       | Book metadata (title, author, progress, etc.)  |
+| `book://current/toc`            | Table of contents                              |
+| `book://current/bookmarks`      | Bookmarks and highlights in the current book   |
+| `book://current/pages/{range}`  | Text from specific pages (e.g., `5` or `10-15`) |
+| `book://current/chapters/{idx}` | Text from a specific chapter by index          |
+
+#### Library Resources
+| Resource URI              | Description                                    |
+| ------------------------- | ---------------------------------------------- |
+| `library://books`         | List of all books in the library               |
+| `library://collections`   | Book collections/shelves                       |
+| `library://history`       | Reading history                                |
+| `library://books/{path}`  | Metadata for a specific book by path           |
 
 ### Tools
 
@@ -131,6 +146,15 @@ The plugin provides these callable tools:
 | `search_book`         | Search for text in the book                                                  | `query`, `case_sensitive` (optional)                                       |
 | `goto_page`           | Navigate to a specific page                                                  | `page`                                                                     |
 | `annotate`            | Add highlight or note to text                                                | `note` (optional), `text` (optional), `start` (optional), `end` (optional) |
+
+#### Tool Annotations
+
+All tools include [MCP annotations](https://modelcontextprotocol.io/docs/concepts/tools#tool-annotations) to help AI assistants understand their behavior:
+
+- `readOnlyHint`: Tools like `get_reading_context`, `get_book_metadata`, `read_pages`, `search_book` are read-only
+- `destructiveHint`: The `annotate` tool modifies the document (false for destructive, but still modifying)
+- `idempotentHint`: Multiple calls with the same parameters produce the same result
+- `openWorldHint`: Whether the tool interacts with external entities
 
 ### Prompts
 
@@ -147,12 +171,42 @@ Prompts are pre-defined conversation starters for common reading companion inter
 | `translate` | Translate       | Translate text to another language                            |
 | `recommend` | Recommend Books | Get personalized book recommendations                         |
 
+### Server-Initiated Features (MCP 2025-03-26)
+
+The plugin supports advanced MCP features that enable the server to communicate back to the client:
+
+#### Resource Notifications
+
+When clients subscribe to resources (e.g., `book://current/page`), the server automatically sends notifications when:
+- The current page changes
+- The book changes (open/close)
+- Selected text changes
+
+This enables real-time awareness of what the user is reading.
+
+#### Logging
+
+The server can send log messages to the client at various levels:
+`debug`, `info`, `notice`, `warning`, `error`, `critical`, `alert`, `emergency`
+
+Clients can set the minimum log level via `logging/setLevel`.
+
+#### Sampling & Elicitation (Prepared for Future Use)
+
+The infrastructure is in place for server-initiated requests:
+- **Sampling**: Request LLM completions from the client
+- **Elicitation**: Request user confirmations, text input, or choices from forms
+
+These features require client support and are ready for when MCP clients implement them.
+
 
 ## Local & Remote Modes
 
 ### Local Mode
 
 In local mode, the MCP server runs on your e-reader and listens for connections on your local network (WiFi). This would be the default mode, but unfortunately some AI clients (most notably Claude Mobile) cannot connect to local network addresses and require a fully remote-accessible server.
+
+**Current limitations**: Server-initiated features (resource notifications, logging) are not yet available in local mode because HTTP is request/response only. These features work fully in remote mode via the cloud relay. See [PR #8](https://github.com/laughedelic/mcp.koplugin/pull/8) for work-in-progress on adding bidirectional communication via long-polling.
 
 So for now this mode is kept for testing and limited use with compatible clients. I've tested it with GitHub Copilot with this configuration (replace `LOCAL_IP`):
 
