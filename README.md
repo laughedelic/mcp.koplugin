@@ -232,7 +232,7 @@ graph LR
   B --> A
 ```
 
-1. **On first connection**, your e-reader generates a device ID (based on your device model) and a random 6-digit passcode
+1. **On first connection**, your e-reader generates a device ID (based on your device type) and a random 6-digit passcode
 2. The passcode is hashed (SHA-256) and sent to the relay — the plaintext passcode never leaves your device
 3. The relay assigns a unique URL for your device
 4. Your e-reader displays the passcode to you (save it!)
@@ -242,26 +242,15 @@ graph LR
 #### Authentication Flow
 
 When you first start the MCP server in remote mode, you'll see:
-- The **relay URL** (stable)
+- The **relay URL**
 - Your **device ID**
 - Your unique **6-digit passcode**
 - Instructions for connecting your AI assistant
 
-**Save your passcode!** It's shown only once during first registration. You'll need it to:
-- Configure AI clients (Claude, etc.) to access your device
-- Authenticate whenever you set up a new AI client
-
-To connect an MCP client:
-1. Add the relay URL to your MCP client (e.g., Claude Desktop settings):
-  - `https://<your-relay>/mcp`
-2. When prompted for authentication, enter:
-  - **Device ID**
-  - **Passcode**
-
 The relay uses OAuth 2.1 Authorization Code flow, so MCP clients that support OAuth will handle authentication automatically.
 
 > [!TIP]
-> You can view your passcode in the MCP settings menu (**Settings → Network → MCP server**) as long as you haven't restarted KOReader since the first registration.
+> You can view your credentials in the MCP settings menu (**Settings → Network → MCP server**)
 
 > [!IMPORTANT]
 > The relay is just a bridge forwarding requests between your e-reader and AI clients. It does not store any book content or personal data. The relay never receives your actual passcode — only its hash.

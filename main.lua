@@ -110,7 +110,7 @@ function MCP:init()
         shared_state.relay:setDeviceName(G_reader_settings:readSetting("mcp_relay_device_name", "KOReader"))
 
         -- Restore saved passcode hash for re-registration
-        -- Note: The plaintext passcode is only available during initial registration
+        -- Note: The plaintext passcode is stored locally for on-demand display
         local saved_passcode_hash = G_reader_settings:readSetting("mcp_relay_passcode_hash")
         if saved_passcode_hash then
             shared_state.relay:setPasscodeHash(saved_passcode_hash)
@@ -223,10 +223,12 @@ function MCP:addToMainMenu(menu_items)
     }
 
     -- Settings sub-menu in Network section
+    self.settings_menu_items = self.settings_menu_items or {}
+    self:buildSettingsMenu(self.settings_menu_items)
     menu_items.mcp_settings = {
         text = _("MCP server"),
         sorting_hint = "network",
-        sub_item_table = self:buildSettingsMenu(),
+        sub_item_table = self.settings_menu_items,
     }
 end
 
@@ -240,113 +242,197 @@ function MCP:setServerMode(mode)
     G_reader_settings:saveSetting("mcp_server_mode", mode)
 end
 
+-- Ensure a device ID exists for relay settings display/registration
+function MCP:ensureRelayDeviceId()
+    local device_id = G_reader_settings:readSetting("mcp_relay_device_id")
+    if not device_id or device_id == "" then
+        device_id = shared_state.relay:generateDeviceId()
+        G_reader_settings:saveSetting("mcp_relay_device_id", device_id)
+        shared_state.relay:setDeviceId(device_id)
+    end
+    return device_id
+end
+
+function MCP:refreshSettingsMenu(touchmenu_instance)
+    if self.settings_menu_items then
+        self:buildSettingsMenu(self.settings_menu_items)
+    end
+    if touchmenu_instance then
+        touchmenu_instance:updateItems()
+    end
+end
+
 -- Build the settings menu dynamically
-function MCP:buildSettingsMenu()
-    return {
+function MCP:buildSettingsMenu(existing_items)
+    local items = existing_items or {}
+    for i = #items, 1, -1 do
+        items[i] = nil
+    end
+
+    -- Auto-start
+    table.insert(items, {
         -- Auto-start
-        {
-            text = _("Start server automatically"),
-            help_text = _("Start the MCP server automatically when KOReader starts (requires network)."),
-            checked_func = function()
-                return G_reader_settings:isTrue("mcp_server_autostart")
-            end,
-            callback = function()
-                G_reader_settings:flipNilOrFalse("mcp_server_autostart")
-            end,
-        },
-        -- Idle timeout
-        {
-            text_func = function()
-                local timeout = G_reader_settings:readSetting("mcp_server_idle_timeout_minutes",
-                    DEFAULT_IDLE_TIMEOUT_MINUTES)
-                if timeout > 0 then
-                    return T(_("Idle timeout: %1 min"), timeout)
+        text = _("Start server automatically"),
+        help_text = _("Start the MCP server automatically when KOReader starts (requires network)."),
+        checked_func = function()
+            return G_reader_settings:isTrue("mcp_server_autostart")
+        end,
+        callback = function(touchmenu_instance)
+            G_reader_settings:flipNilOrFalse("mcp_server_autostart")
+            self:refreshSettingsMenu(touchmenu_instance)
+        end,
+        keep_menu_open = true,
+    })
+
+    -- Idle timeout
+    table.insert(items, {
+        text_func = function()
+            local timeout = G_reader_settings:readSetting("mcp_server_idle_timeout_minutes",
+                DEFAULT_IDLE_TIMEOUT_MINUTES)
+            if timeout > 0 then
+                return T(_("Idle timeout: %1 min"), timeout)
+            else
+                return _("Idle timeout: disabled")
+            end
+        end,
+        help_text = _(
+            "Automatically stop the server after a period of inactivity. A warning notification will appear before stopping, which can be tapped to keep the server alive."),
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            local timeout = G_reader_settings:readSetting("mcp_server_idle_timeout_minutes",
+                DEFAULT_IDLE_TIMEOUT_MINUTES)
+            local idle_dialog = SpinWidget:new {
+                title_text = _("MCP server idle timeout"),
+                info_text = _("Stop the server after this period of inactivity. Set to 0 to disable."),
+                value = timeout,
+                default_value = DEFAULT_IDLE_TIMEOUT_MINUTES,
+                value_min = 0,
+                value_max = 120,
+                value_step = 1,
+                value_hold_step = 5,
+                unit = _("min"),
+                ok_text = _("Set"),
+                callback = function(spin)
+                    G_reader_settings:saveSetting("mcp_server_idle_timeout_minutes", spin.value)
+                    -- Reschedule idle check if server is running
+                    if shared_state.server_running then
+                        self:scheduleIdleCheck()
+                    end
+                    self:refreshSettingsMenu(touchmenu_instance)
+                end,
+            }
+            UIManager:show(idle_dialog)
+        end,
+    })
+
+    table.insert(items, {
+        text = _("Turn off WiFi on idle timeout"),
+        help_text = _("When the server is stopped due to idle timeout, also turn off WiFi to save battery."),
+        enabled_func = function()
+            return G_reader_settings:readSetting("mcp_server_idle_timeout_minutes", DEFAULT_IDLE_TIMEOUT_MINUTES) > 0
+        end,
+        checked_func = function()
+            return G_reader_settings:isTrue("mcp_server_idle_timeout_wifi_off")
+        end,
+        callback = function(touchmenu_instance)
+            G_reader_settings:flipNilOrFalse("mcp_server_idle_timeout_wifi_off")
+            self:refreshSettingsMenu(touchmenu_instance)
+        end,
+        keep_menu_open = true,
+        separator = true,
+    })
+
+    -- Connection status (tap to connect/view)
+    table.insert(items, {
+        text_func = function()
+            local mode = self:getServerMode()
+            local status
+            if shared_state.server_running then
+                if mode == "remote" then
+                    if shared_state.relay_connected then
+                        status = _("Connected")
+                    elseif shared_state.relay_running then
+                        status = _("Connecting…")
+                    else
+                        status = _("Offline")
+                    end
                 else
-                    return _("Idle timeout: disabled")
+                    status = _("Local")
                 end
-            end,
-            help_text = _(
-                "Automatically stop the server after a period of inactivity. A warning notification will appear before stopping, which can be tapped to keep the server alive."),
-            keep_menu_open = true,
-            callback = function(touchmenu_instance)
-                local timeout = G_reader_settings:readSetting("mcp_server_idle_timeout_minutes",
-                    DEFAULT_IDLE_TIMEOUT_MINUTES)
-                local idle_dialog = SpinWidget:new {
-                    title_text = _("MCP server idle timeout"),
-                    info_text = _("Stop the server after this period of inactivity. Set to 0 to disable."),
-                    value = timeout,
-                    default_value = DEFAULT_IDLE_TIMEOUT_MINUTES,
-                    value_min = 0,
-                    value_max = 120,
-                    value_step = 1,
-                    value_hold_step = 5,
-                    unit = _("min"),
-                    ok_text = _("Set"),
-                    callback = function(spin)
-                        G_reader_settings:saveSetting("mcp_server_idle_timeout_minutes", spin.value)
-                        -- Reschedule idle check if server is running
-                        if shared_state.server_running then
-                            self:scheduleIdleCheck()
-                        end
-                        if touchmenu_instance then
-                            touchmenu_instance:updateItems()
-                        end
-                    end,
-                }
-                UIManager:show(idle_dialog)
-            end,
-        },
-        {
-            text = _("Turn off WiFi on idle timeout"),
-            help_text = _("When the server is stopped due to idle timeout, also turn off WiFi to save battery."),
-            enabled_func = function()
-                return G_reader_settings:readSetting("mcp_server_idle_timeout_minutes", DEFAULT_IDLE_TIMEOUT_MINUTES) > 0
-            end,
-            checked_func = function()
-                return G_reader_settings:isTrue("mcp_server_idle_timeout_wifi_off")
-            end,
-            callback = function()
-                G_reader_settings:flipNilOrFalse("mcp_server_idle_timeout_wifi_off")
-            end,
-            separator = true,
-        },
-        -- Server Mode as radio buttons
-        {
-            text = _("Remote (via cloud relay)"),
-            help_text = _(
-                "Connect via cloud relay for access from anywhere (Claude Desktop, Claude Mobile, etc.) without complex network setup."),
-            checked_func = function()
-                return self:getServerMode() == "remote"
-            end,
-            radio = true,
-            callback = function()
-                self:setServerMode("remote")
-                -- If server is running, restart with new mode
-                if shared_state.server_running then
-                    self:stopServer()
-                    self:startServer()
+            else
+                status = _("Stopped")
+            end
+            return T(_("· Status: %1 ·"), status)
+        end,
+        help_text = _("Tap to connect or view server details."),
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            local mode = self:getServerMode()
+            if not shared_state.server_running then
+                self:startServer()
+            else
+                if mode == "remote" and not shared_state.relay_connected then
+                    if shared_state.relay_running then
+                        shared_state.relay:register(function()
+                            self:refreshSettingsMenu(touchmenu_instance)
+                        end)
+                    else
+                        self:startRelay(true)
+                    end
+                else
+                    self:showServerDetails()
                 end
-            end,
-        },
-        {
-            text = _("Local network only"),
-            help_text = _("Run MCP server on local network only. Clients must be on the same WiFi network."),
-            checked_func = function()
-                return self:getServerMode() == "local"
-            end,
-            radio = true,
-            callback = function()
-                self:setServerMode("local")
-                -- If server is running, restart with new mode
-                if shared_state.server_running then
-                    self:stopServer()
-                    self:startServer()
-                end
-            end,
-            separator = true,
-        },
-        -- Cloud Relay Settings (enabled in remote mode)
-        {
+            end
+            self:refreshSettingsMenu(touchmenu_instance)
+        end,
+        separator = true,
+    })
+
+    -- Server Mode as radio buttons (local first)
+    table.insert(items, {
+        text = _("Local network only"),
+        help_text = _("Run MCP server on local network only. Clients must be on the same WiFi network."),
+        checked_func = function()
+            return self:getServerMode() == "local"
+        end,
+        radio = true,
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            self:setServerMode("local")
+            -- If server is running, restart with new mode
+            if shared_state.server_running then
+                self:stopServer()
+                self:startServer()
+            end
+            self:refreshSettingsMenu(touchmenu_instance)
+        end,
+    })
+
+    table.insert(items, {
+        text = _("Remote (via cloud relay)"),
+        help_text = _(
+            "Connect via cloud relay for access from anywhere (Claude Desktop, Claude Mobile, etc.) without complex network setup."),
+        checked_func = function()
+            return self:getServerMode() == "remote"
+        end,
+        radio = true,
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            self:setServerMode("remote")
+            -- If server is running, restart with new mode
+            if shared_state.server_running then
+                self:stopServer()
+                self:startServer()
+            end
+            self:refreshSettingsMenu(touchmenu_instance)
+        end,
+        separator = true,
+    })
+
+    local mode = self:getServerMode()
+    if mode == "remote" then
+        -- Cloud Relay Settings (only in remote mode)
+        table.insert(items, {
             text_func = function()
                 local relay_url = G_reader_settings:readSetting("mcp_relay_url", DEFAULT_RELAY_URL)
                 -- Show just the domain name
@@ -354,9 +440,6 @@ function MCP:buildSettingsMenu()
                 return T(_("Relay server: %1"), domain or relay_url)
             end,
             help_text = _("The cloud relay server URL. Change this only if you're running your own relay."),
-            enabled_func = function()
-                return self:getServerMode() == "remote"
-            end,
             keep_menu_open = true,
             callback = function(touchmenu_instance)
                 local relay_url = G_reader_settings:readSetting("mcp_relay_url", DEFAULT_RELAY_URL)
@@ -397,7 +480,7 @@ function MCP:buildSettingsMenu()
                                     end
                                     UIManager:close(input_dialog)
                                     if touchmenu_instance then
-                                        touchmenu_instance:updateItems()
+                                        self:refreshSettingsMenu(touchmenu_instance)
                                     end
                                 end,
                             },
@@ -407,20 +490,15 @@ function MCP:buildSettingsMenu()
                 UIManager:show(input_dialog)
                 input_dialog:onShowKeyboard()
             end,
-        },
-        {
+        })
+
+        table.insert(items, {
             text_func = function()
-                local device_id = G_reader_settings:readSetting("mcp_relay_device_id")
-                if device_id then
-                    return T(_("Device ID: %1"), device_id)
-                else
-                    return _("Device ID: (not set)")
-                end
+                local device_id = self:ensureRelayDeviceId()
+                return T(_("Device ID: %1"), device_id)
             end,
-            help_text = _("Your unique device identifier. Reset to get a new relay URL."),
-            enabled_func = function()
-                return self:getServerMode() == "remote"
-            end,
+            help_text = _("Your unique device identifier. Reset to get new credentials."),
+            keep_menu_open = true,
             callback = function(touchmenu_instance)
                 local device_id = G_reader_settings:readSetting("mcp_relay_device_id")
                 local message = device_id
@@ -459,52 +537,76 @@ function MCP:buildSettingsMenu()
                             })
                         end
                         if touchmenu_instance then
-                            touchmenu_instance:updateItems()
+                            self:refreshSettingsMenu(touchmenu_instance)
                         end
                     end,
                 })
             end,
-        },
-        {
-            text_func = function()
-                local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
-                if passcode then
-                    return T(_("Passcode: %1"), passcode)
-                else
-                    return _("Passcode: (not available)")
-                end
-            end,
-            help_text = _("Your passcode for MCP client authentication. Only visible until you restart KOReader."),
-            enabled_func = function()
-                local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
-                return self:getServerMode() == "remote" and passcode ~= nil
-            end,
-            keep_menu_open = true,
-            callback = function()
-                local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
-                local device_id = G_reader_settings:readSetting("mcp_relay_device_id")
-                local relay_url = G_reader_settings:readSetting("mcp_relay_url", DEFAULT_RELAY_URL)
-                local public_url = relay_url .. "/mcp"
-                local token_endpoint = relay_url .. "/oauth/token"
+        })
 
-                if passcode and device_id then
-                    self:showFirstRegistrationInfo(device_id, passcode, public_url, token_endpoint)
-                else
-                    UIManager:show(InfoMessage:new {
-                        text = _("Passcode is only available after generating credentials. Reset your Device ID to generate new credentials."),
-                    })
-                end
-            end,
-            separator = true,
-        },
-        {
-            text = _("About MCP server"),
-            keep_menu_open = true,
-            callback = function()
-                self:showAbout()
-            end,
-        },
-    }
+        local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
+        if passcode then
+            table.insert(items, {
+                text_func = function()
+                    return T(_("Passcode: %1"), passcode)
+                end,
+                help_text = _("Your passcode for MCP client authentication. Stored on this device; view it anytime."),
+                keep_menu_open = true,
+                callback = function()
+                    local device_id = G_reader_settings:readSetting("mcp_relay_device_id")
+                    local relay_url = G_reader_settings:readSetting("mcp_relay_url", DEFAULT_RELAY_URL)
+                    local public_url = relay_url .. "/mcp"
+                    local token_endpoint = relay_url .. "/oauth/token"
+
+                    if device_id then
+                        self:showFirstRegistrationInfo(device_id, passcode, public_url, token_endpoint)
+                    else
+                        UIManager:show(InfoMessage:new {
+                            text = _("Device ID is missing. Reset your Device ID to generate new credentials."),
+                        })
+                    end
+                end,
+                separator = true,
+            })
+        else
+            table.insert(items, {
+                text = _("Register device"),
+                help_text = _("Register with the relay to generate your passcode."),
+                keep_menu_open = true,
+                callback = function(touchmenu_instance)
+                    self:ensureRelayDeviceId()
+                    -- Force a new registration by clearing passcode info
+                    G_reader_settings:delSetting("mcp_relay_passcode")
+                    G_reader_settings:delSetting("mcp_relay_passcode_hash")
+                    shared_state.relay:setPasscode(nil)
+                    shared_state.relay:setPasscodeHash(nil)
+
+                    if not shared_state.server_running then
+                        self:startServer()
+                    elseif not shared_state.relay_running then
+                        self:startRelay(true)
+                    else
+                        shared_state.relay:register(function()
+                            self:refreshSettingsMenu(touchmenu_instance)
+                        end)
+                    end
+
+                    self:refreshSettingsMenu(touchmenu_instance)
+                end,
+                separator = true,
+            })
+        end
+    end
+
+    table.insert(items, {
+        text = _("About MCP server"),
+        keep_menu_open = true,
+        callback = function()
+            self:showAbout()
+        end,
+    })
+
+    return items
 end
 
 function MCP:startServer()
@@ -842,7 +944,7 @@ function MCP:showServerDetails()
 
     if is_remote then
         if shared_state.relay_connected and shared_state.relay_url then
-            url = shared_state.relay_url .. "/mcp"
+            url = shared_state.relay_url
             title = _("MCP Server (☁ Remote)")
         elseif shared_state.relay_running then
             -- Still connecting
@@ -930,19 +1032,6 @@ function MCP:showServerDetails()
             })
         end
     end
-
-    -- Add settings hint text
-    local settings_hint = TextBoxWidget:new {
-        text = _("Settings: ☰ Menu → Network → MCP server"),
-        width = Screen:getWidth() * 0.75,
-        face = Font:getFace("cfont", 14),
-        alignment = "center",
-    }
-    table.insert(dialog_content, VerticalSpan:new { width = Size.padding.default })
-    table.insert(dialog_content, CenterContainer:new {
-        dimen = { w = Screen:getWidth() * 0.8, h = settings_hint:getSize().h },
-        settings_hint,
-    })
 
     -- Create the dialog with buttons
     local details_dialog
@@ -1099,7 +1188,7 @@ function MCP:showFirstRegistrationInfo(device_id, passcode, public_url, token_en
 
     -- Warning text
     local warning_widget = TextBoxWidget:new {
-        text = _("Save this passcode! You'll need it to authenticate your AI assistant. It won't be shown again."),
+        text = _("Use these credentials to authenticate your AI assistant"),
         width = Screen:getWidth() * 0.75,
         face = Font:getFace("cfont", 14),
         alignment = "center",

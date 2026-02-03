@@ -6,7 +6,7 @@
     WebSocket support.
 
     The relay flow:
-    1. Device generates credentials locally (deviceId from Device.model + suffix, random passcode)
+    1. Device generates credentials locally (deviceId from device type + suffix, random passcode)
     2. Device registers with relay, sending deviceId + SHA-256 hash of passcode
     3. Relay stores the hash, returns public MCP URL
     4. Device shows passcode to user (who enters it in Claude Desktop / other MCP clients)
@@ -79,12 +79,10 @@ function MCPRelay:new(o)
     return o
 end
 
--- Generate a device ID using the actual device model + 4-char suffix
--- Example: "KoboClara-a7b2" or "Kindle-px9c"
+-- Generate a device ID using the device type + 4-char suffix
+-- Example: "Kobo-a7b2" or "Kindle-px9c"
 function MCPRelay:generateDeviceId()
-    -- Get the device model from KOReader's Device API
-    -- Use ota_model if available (more specific), otherwise fall back to model
-    local device_model = Device.ota_model or Device.model or "KOReader"
+    local device_model = self:getDeviceTypeLabel()
 
     -- Clean up the model name: remove spaces, special characters
     local clean_model = device_model:gsub("[^%w%-_]", "")
@@ -101,6 +99,33 @@ function MCPRelay:generateDeviceId()
     end
 
     return clean_model .. "-" .. suffix
+end
+
+-- Get a generalized device type label (Kindle, Kobo, etc.) when possible
+function MCPRelay:getDeviceTypeLabel()
+    if type(Device.isKindle) == "function" and Device:isKindle() then
+        return "Kindle"
+    end
+    if type(Device.isKobo) == "function" and Device:isKobo() then
+        return "Kobo"
+    end
+    if type(Device.isPocketBook) == "function" and Device:isPocketBook() then
+        return "PocketBook"
+    end
+    if type(Device.isOnyx) == "function" and Device:isOnyx() then
+        return "Onyx"
+    end
+    if type(Device.isAndroid) == "function" and Device:isAndroid() then
+        return "Android"
+    end
+    if type(Device.isIReader) == "function" and Device:isIReader() then
+        return "iReader"
+    end
+    if type(Device.isBoox) == "function" and Device:isBoox() then
+        return "Boox"
+    end
+
+    return Device.ota_model or Device.model or "KOReader"
 end
 
 -- Generate a random 6-digit numeric passcode
@@ -528,8 +553,10 @@ function MCPRelay:register(callback)
     local is_first_registration = not self.device_id or not self.passcode_hash
 
     if is_first_registration then
-        -- Generate new credentials locally
-        local device_id, passcode, passcode_hash = self:generateCredentials()
+        -- Generate new credentials locally (keep existing device_id if pre-generated)
+        local device_id = self.device_id or self:generateDeviceId()
+        local passcode = self:generatePasscode()
+        local passcode_hash = self:hashPasscode(passcode)
         self.device_id = device_id
         self.passcode = passcode -- Save for display to user
         self.passcode_hash = passcode_hash
