@@ -301,7 +301,7 @@ function MCPRelay:parseHttpResponse(raw_response)
 end
 
 -- Non-blocking HTTP request using LuaSocket + UIManager scheduling
-function MCPRelay:httpRequestAsync(request_url, method, body, callback)
+function MCPRelay:httpRequestAsync(request_url, method, body, callback, extra_headers)
     local UIManager = require("ui/uimanager")
     local parsed = self:parseUrl(request_url)
     local is_https = parsed.scheme == "https"
@@ -441,7 +441,7 @@ function MCPRelay:httpRequestAsync(request_url, method, body, callback)
         if state.phase == "sending" then
             -- Send HTTP request
             local active_sock = state.ssl_sock or state.sock
-            local request_str = self:buildHttpRequest(method, parsed, body)
+            local request_str = self:buildHttpRequest(method, parsed, body, extra_headers)
 
             local sent, err = active_sock:send(request_str)
             if sent then
@@ -490,18 +490,28 @@ function MCPRelay:httpRequestAsync(request_url, method, body, callback)
 end
 
 -- HTTP request entry point
-function MCPRelay:httpRequest(request_url, method, body, callback)
-    self:httpRequestAsync(request_url, method, body, callback)
+function MCPRelay:httpRequest(request_url, method, body, callback, extra_headers)
+    self:httpRequestAsync(request_url, method, body, callback, extra_headers)
 end
 
 -- HTTP POST helper
-function MCPRelay:httpPost(request_url, body, callback)
-    self:httpRequest(request_url, "POST", body, callback)
+function MCPRelay:httpPost(request_url, body, callback, extra_headers)
+    self:httpRequest(request_url, "POST", body, callback, extra_headers)
 end
 
 -- HTTP GET helper
-function MCPRelay:httpGet(request_url, callback)
-    self:httpRequest(request_url, "GET", nil, callback)
+function MCPRelay:httpGet(request_url, callback, extra_headers)
+    self:httpRequest(request_url, "GET", nil, callback, extra_headers)
+end
+
+-- Standard headers for device requests
+function MCPRelay:getDeviceHeaders()
+    if not self.device_id then
+        return {}
+    end
+    return {
+        ["X-Device-Id"] = self.device_id,
+    }
 end
 
 -- Register with the relay server
@@ -527,7 +537,7 @@ function MCPRelay:register(callback)
         logger.info("MCP Relay: Generated new credentials for device:", self.device_id)
     end
 
-    local register_url = self.relay_url .. "/" .. self.device_id .. "/register"
+    local register_url = self.relay_url .. "/register"
 
     local payload_data = {
         deviceId = self.device_id,
@@ -572,7 +582,7 @@ function MCPRelay:register(callback)
         end
 
         -- Save the public URL and token endpoint
-        self.public_url = data.relayUrl or (self.relay_url .. "/" .. self.device_id .. "/mcp")
+        self.public_url = data.relayUrl or (self.relay_url .. "/mcp")
         self.token_endpoint = data.tokenEndpoint or (self.relay_url .. "/oauth/token")
         self.connected = true
         self.reconnect_scheduled = false -- Clear reconnect flag on successful connection
@@ -585,7 +595,7 @@ function MCPRelay:register(callback)
         if is_first_registration and self.passcode then
             logger.info("MCP Relay: First registration complete, showing credentials to user")
 
-            -- Call first registration callback to show QR code / setup info
+            -- Call first registration callback to show setup info
             if self.onFirstRegistration then
                 self.onFirstRegistration(self.device_id, self.passcode, self.public_url, self.token_endpoint)
             end
@@ -604,7 +614,7 @@ function MCPRelay:register(callback)
         if callback then
             callback(true)
         end
-    end)
+    end, self:getDeviceHeaders())
 end
 
 -- Poll for incoming requests
@@ -620,7 +630,7 @@ function MCPRelay:pollForRequests()
         return
     end
 
-    local poll_url = self.relay_url .. "/" .. self.device_id .. "/poll"
+    local poll_url = self.relay_url .. "/poll"
     local poll_start_time = socket.gettime()
 
     self._polling = true
@@ -668,7 +678,7 @@ function MCPRelay:pollForRequests()
         -- Parse the request
         logger.info("MCP Relay: Poll received request in", string.format("%.2fs", poll_elapsed))
         self:handlePollResponse(response.body)
-    end)
+    end, self:getDeviceHeaders())
 end
 
 -- Handle the poll response body
@@ -769,7 +779,7 @@ end
 
 -- Send response back to the relay
 function MCPRelay:sendResponse(request_id, response, request_start_time)
-    local response_url = self.relay_url .. "/" .. self.device_id .. "/response"
+    local response_url = self.relay_url .. "/response"
 
     local payload = json.encode({
         type = "response",
@@ -790,7 +800,7 @@ function MCPRelay:sendResponse(request_id, response, request_start_time)
         end
         -- Schedule next poll after sending response
         self:scheduleNextPoll()
-    end)
+    end, self:getDeviceHeaders())
 end
 
 -- Schedule the next poll using UIManager (with adaptive interval)
@@ -826,10 +836,10 @@ end
 
 -- Send pong in response to ping
 function MCPRelay:sendPong()
-    local pong_url = self.relay_url .. "/" .. self.device_id .. "/pong"
+    local pong_url = self.relay_url .. "/pong"
     self:httpPost(pong_url, json.encode({ type = "pong" }), function(resp)
         -- Pong sent, no need to handle response
-    end)
+    end, self:getDeviceHeaders())
 end
 
 -- Send a notification to the client (server-initiated message)
@@ -840,7 +850,7 @@ function MCPRelay:sendNotification(notification)
         return false
     end
 
-    local notify_url = self.relay_url .. "/" .. self.device_id .. "/notify"
+    local notify_url = self.relay_url .. "/notify"
 
     local payload = json.encode({
         type = "notification",
@@ -855,7 +865,7 @@ function MCPRelay:sendNotification(notification)
         else
             logger.dbg("MCP Relay: Notification sent successfully")
         end
-    end)
+    end, self:getDeviceHeaders())
 
     return true
 end
@@ -872,7 +882,7 @@ function MCPRelay:sendRequest(request, callback)
         return false
     end
 
-    local req_url = self.relay_url .. "/" .. self.device_id .. "/request"
+    local req_url = self.relay_url .. "/request"
 
     local payload = json.encode({
         type = "server_request",
@@ -901,7 +911,7 @@ function MCPRelay:sendRequest(request, callback)
             logger.dbg("MCP Relay: Server request sent, awaiting response")
             -- Response will come through the poll mechanism
         end
-    end)
+    end, self:getDeviceHeaders())
 
     return true
 end

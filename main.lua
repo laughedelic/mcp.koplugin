@@ -14,7 +14,6 @@ local Device = require("device")
 local SpinWidget = require("ui/widget/spinwidget")
 local InputDialog = require("ui/widget/inputdialog")
 local ButtonDialog = require("ui/widget/buttondialog")
-local QRWidget = require("ui/widget/qrwidget")
 local TextWidget = require("ui/widget/textwidget")
 local TextBoxWidget = require("ui/widget/textboxwidget")
 local VerticalGroup = require("ui/widget/verticalgroup")
@@ -428,7 +427,7 @@ function MCP:buildSettingsMenu()
                     and
                     T(
                         _(
-                        "Current device ID:\n%1\n\nDo you want to reset it? This will generate new credentials and change your relay URL."),
+                            "Current device ID:\n%1\n\nDo you want to reset it? This will generate new credentials and change your relay URL."),
                         device_id)
                     or _("No device ID set yet. It will be generated when you first connect to the cloud relay.")
 
@@ -485,7 +484,7 @@ function MCP:buildSettingsMenu()
                 local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
                 local device_id = G_reader_settings:readSetting("mcp_relay_device_id")
                 local relay_url = G_reader_settings:readSetting("mcp_relay_url", DEFAULT_RELAY_URL)
-                local public_url = device_id and (relay_url .. "/" .. device_id .. "/mcp") or _("(connect first)")
+                local public_url = relay_url .. "/mcp"
                 local token_endpoint = relay_url .. "/oauth/token"
 
                 if passcode and device_id then
@@ -843,7 +842,7 @@ function MCP:showServerDetails()
 
     if is_remote then
         if shared_state.relay_connected and shared_state.relay_url then
-            url = shared_state.relay_url
+            url = shared_state.relay_url .. "/mcp"
             title = _("MCP Server (☁ Remote)")
         elseif shared_state.relay_running then
             -- Still connecting
@@ -868,21 +867,6 @@ function MCP:showServerDetails()
     -- Create the dialog content
     local dialog_content = VerticalGroup:new { align = "center" }
 
-    -- Add QR code for remote mode
-    if is_remote then
-        local qr_size = math.min(Screen:getWidth(), Screen:getHeight()) * 0.5
-        local qr_widget = QRWidget:new {
-            text = url,
-            width = qr_size,
-            height = qr_size,
-        }
-        table.insert(dialog_content, CenterContainer:new {
-            dimen = { w = Screen:getWidth() * 0.8, h = qr_size },
-            qr_widget,
-        })
-        table.insert(dialog_content, VerticalSpan:new { width = Size.padding.large })
-    end
-
     -- Add URL text
     local url_widget = TextBoxWidget:new {
         text = url,
@@ -894,6 +878,58 @@ function MCP:showServerDetails()
         dimen = { w = Screen:getWidth() * 0.8, h = url_widget:getSize().h },
         url_widget,
     })
+
+    -- Add device credentials for remote mode
+    if is_remote then
+        local device_id = shared_state.relay:getDeviceId()
+        local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
+
+        if device_id then
+            table.insert(dialog_content, VerticalSpan:new { width = Size.padding.default })
+
+            local device_label = TextWidget:new {
+                text = _("Device ID:"),
+                face = Font:getFace("cfont", 14),
+            }
+            table.insert(dialog_content, CenterContainer:new {
+                dimen = { w = Screen:getWidth() * 0.8, h = device_label:getSize().h },
+                device_label,
+            })
+
+            local device_widget = TextWidget:new {
+                text = device_id,
+                face = Font:getFace("cfont", 20),
+                bold = true,
+            }
+            table.insert(dialog_content, CenterContainer:new {
+                dimen = { w = Screen:getWidth() * 0.8, h = device_widget:getSize().h },
+                device_widget,
+            })
+        end
+
+        if passcode then
+            table.insert(dialog_content, VerticalSpan:new { width = Size.padding.default })
+
+            local passcode_label = TextWidget:new {
+                text = _("Passcode:"),
+                face = Font:getFace("cfont", 14),
+            }
+            table.insert(dialog_content, CenterContainer:new {
+                dimen = { w = Screen:getWidth() * 0.8, h = passcode_label:getSize().h },
+                passcode_label,
+            })
+
+            local passcode_widget = TextWidget:new {
+                text = passcode,
+                face = Font:getFace("cfont", 24),
+                bold = true,
+            }
+            table.insert(dialog_content, CenterContainer:new {
+                dimen = { w = Screen:getWidth() * 0.8, h = passcode_widget:getSize().h },
+                passcode_widget,
+            })
+        end
+    end
 
     -- Add settings hint text
     local settings_hint = TextBoxWidget:new {
@@ -934,7 +970,7 @@ function MCP:showServerDetails()
         },
     }
 
-    -- Add the QR/URL content to the dialog
+    -- Add the details content to the dialog
     details_dialog:addWidget(dialog_content)
 
     UIManager:show(details_dialog)
@@ -950,17 +986,17 @@ function MCP:showSetupInstructions()
         local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
         local auth_info = ""
         if passcode then
-            auth_info = _("\n\nAuthentication:\n" ..
-                "• Username: ") .. (shared_state.relay:getDeviceId() or _("(device ID)")) .. _("\n" ..
-                "• Password: ") .. passcode
+            auth_info = _("\n\nDevice credentials:\n" ..
+                "• Device ID: ") .. (shared_state.relay:getDeviceId() or _("(device ID)")) .. _("\n" ..
+                "• Passcode: ") .. passcode
         end
 
         instructions = _("To connect an MCP client:\n\n" ..
             "Claude Desktop/Mobile:\n" ..
             "1. Open Settings → MCP Servers\n" ..
-            "2. Add new server with URL:\n   ") .. shared_state.relay_url .. auth_info .. _("\n" ..
+            "2. Add new server with URL:\n   ") .. (shared_state.relay_url or "") .. _("/mcp") .. auth_info .. _("\n" ..
             "3. Save and start chatting!\n\n" ..
-            "The QR code contains the server URL for easy mobile setup.")
+            "You'll be prompted to enter the Device ID and Passcode during login.")
     else
         local ip = shared_state.server:getLocalIP()
         local port = shared_state.server.port
@@ -978,7 +1014,7 @@ function MCP:showSetupInstructions()
     })
 end
 
--- Show first registration info with QR code and passcode
+-- Show first registration info with credentials
 -- Called only when a device gets a new passcode (first time registration)
 function MCP:showFirstRegistrationInfo(device_id, passcode, public_url, token_endpoint)
     local mcp_self = self
@@ -997,20 +1033,16 @@ function MCP:showFirstRegistrationInfo(device_id, passcode, public_url, token_en
     })
     table.insert(dialog_content, VerticalSpan:new { width = Size.padding.large })
 
-    -- QR code with the URL
-    local qr_size = math.min(Screen:getWidth(), Screen:getHeight()) * 0.4
-    local qr_widget = QRWidget:new {
-        text = public_url,
-        width = qr_size,
-        height = qr_size,
+    -- Connection URL
+    local url_label = TextWidget:new {
+        text = _("Relay URL:"),
+        face = Font:getFace("cfont", 16),
     }
     table.insert(dialog_content, CenterContainer:new {
-        dimen = { w = Screen:getWidth() * 0.8, h = qr_size },
-        qr_widget,
+        dimen = { w = Screen:getWidth() * 0.8, h = url_label:getSize().h },
+        url_label,
     })
-    table.insert(dialog_content, VerticalSpan:new { width = Size.padding.default })
 
-    -- URL text
     local url_widget = TextBoxWidget:new {
         text = public_url,
         width = Screen:getWidth() * 0.75,
@@ -1021,11 +1053,32 @@ function MCP:showFirstRegistrationInfo(device_id, passcode, public_url, token_en
         dimen = { w = Screen:getWidth() * 0.8, h = url_widget:getSize().h },
         url_widget,
     })
-    table.insert(dialog_content, VerticalSpan:new { width = Size.padding.large })
+    table.insert(dialog_content, VerticalSpan:new { width = Size.padding.default })
+
+    -- Device ID
+    local device_label = TextWidget:new {
+        text = _("Device ID:"),
+        face = Font:getFace("cfont", 16),
+    }
+    table.insert(dialog_content, CenterContainer:new {
+        dimen = { w = Screen:getWidth() * 0.8, h = device_label:getSize().h },
+        device_label,
+    })
+
+    local device_widget = TextWidget:new {
+        text = device_id,
+        face = Font:getFace("cfont", 22),
+        bold = true,
+    }
+    table.insert(dialog_content, CenterContainer:new {
+        dimen = { w = Screen:getWidth() * 0.8, h = device_widget:getSize().h },
+        device_widget,
+    })
+    table.insert(dialog_content, VerticalSpan:new { width = Size.padding.default })
 
     -- Passcode display (large and prominent)
     local passcode_label = TextWidget:new {
-        text = _("Your passcode:"),
+        text = _("Passcode:"),
         face = Font:getFace("cfont", 16),
     }
     table.insert(dialog_content, CenterContainer:new {

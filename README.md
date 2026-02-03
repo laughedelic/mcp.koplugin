@@ -242,7 +242,8 @@ graph LR
 #### Authentication Flow
 
 When you first start the MCP server in remote mode, you'll see:
-- A QR code with your relay URL
+- The **relay URL** (stable)
+- Your **device ID**
 - Your unique **6-digit passcode**
 - Instructions for connecting your AI assistant
 
@@ -251,12 +252,13 @@ When you first start the MCP server in remote mode, you'll see:
 - Authenticate whenever you set up a new AI client
 
 To connect an MCP client:
-1. Add the relay URL to your MCP client (e.g., Claude Desktop settings)
-2. When prompted for authentication:
-   - **Username**: Your device ID (e.g., `KoboClara-abc1`)
-   - **Password**: Your 6-digit passcode
+1. Add the relay URL to your MCP client (e.g., Claude Desktop settings):
+  - `https://<your-relay>/mcp`
+2. When prompted for authentication, enter:
+  - **Device ID**
+  - **Passcode**
 
-The relay implements OAuth 2.0 password grant, so MCP clients that support OAuth will handle authentication automatically.
+The relay uses OAuth 2.1 Authorization Code flow, so MCP clients that support OAuth will handle authentication automatically.
 
 > [!TIP]
 > You can view your passcode in the MCP settings menu (**Settings → Network → MCP server**) as long as you haven't restarted KOReader since the first registration.
@@ -270,7 +272,6 @@ The relay implementation is open source: [mcp-relay-cloudflare](https://github.c
 
 - **Zero-knowledge passcode**: Passcode is generated locally and only the SHA-256 hash is sent to the relay
 - **OAuth 2.0 authentication**: MCP clients must authenticate with your device ID and passcode
-- **Industry-standard JWT**: Uses the [jose](https://github.com/panva/jose) library for secure token handling
 - **Short-lived tokens**: Access tokens expire in 1 hour
 - **Audience validation**: Tokens are bound to your specific device
 - All traffic is encrypted (HTTPS)
