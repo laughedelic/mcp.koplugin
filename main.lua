@@ -110,6 +110,19 @@ function MCP:init()
         end
         shared_state.relay:setDeviceName(G_reader_settings:readSetting("mcp_relay_device_name", "KOReader"))
 
+        -- Restore saved passcode hash for re-registration
+        -- Note: The plaintext passcode is only available during initial registration
+        local saved_passcode_hash = G_reader_settings:readSetting("mcp_relay_passcode_hash")
+        if saved_passcode_hash then
+            shared_state.relay:setPasscodeHash(saved_passcode_hash)
+        end
+
+        -- Also restore passcode if user hasn't had a chance to write it down yet
+        local saved_passcode = G_reader_settings:readSetting("mcp_relay_passcode")
+        if saved_passcode then
+            shared_state.relay:setPasscode(saved_passcode)
+        end
+
         -- Set up relay callbacks
         shared_state.relay:setStatusCallback(function(connected, url)
             shared_state.relay_connected = connected
@@ -118,6 +131,19 @@ function MCP:init()
                 -- Save the device ID for reconnection
                 G_reader_settings:saveSetting("mcp_relay_device_id", shared_state.relay:getDeviceId())
             end
+        end)
+
+        -- Callback for first registration (when credentials are generated locally)
+        shared_state.relay:setFirstRegistrationCallback(function(device_id, passcode, public_url, token_endpoint)
+            -- Save credentials for future re-registrations
+            G_reader_settings:saveSetting("mcp_relay_device_id", device_id)
+            G_reader_settings:saveSetting("mcp_relay_passcode", passcode) -- Keep temporarily for display
+            G_reader_settings:saveSetting("mcp_relay_passcode_hash", shared_state.relay:getPasscodeHash())
+
+            -- Show QR code and passcode to the user
+            UIManager:scheduleIn(0.5, function()
+                MCP:showFirstRegistrationInfo(device_id, passcode, public_url, token_endpoint)
+            end)
         end)
     end
 
@@ -399,7 +425,10 @@ function MCP:buildSettingsMenu()
             callback = function(touchmenu_instance)
                 local device_id = G_reader_settings:readSetting("mcp_relay_device_id")
                 local message = device_id
-                    and T(_("Current device ID:\n%1\n\nDo you want to reset it? This will change your relay URL."),
+                    and
+                    T(
+                        _(
+                        "Current device ID:\n%1\n\nDo you want to reset it? This will generate new credentials and change your relay URL."),
                         device_id)
                     or _("No device ID set yet. It will be generated when you first connect to the cloud relay.")
 
@@ -409,19 +438,24 @@ function MCP:buildSettingsMenu()
                     text = message,
                     ok_text = _("Reset"),
                     ok_callback = function()
+                        -- Clear all credentials
                         G_reader_settings:delSetting("mcp_relay_device_id")
+                        G_reader_settings:delSetting("mcp_relay_passcode")
+                        G_reader_settings:delSetting("mcp_relay_passcode_hash")
                         shared_state.relay:setDeviceId(nil)
+                        shared_state.relay:setPasscode(nil)
+                        shared_state.relay:setPasscodeHash(nil)
                         -- Restart server if running in remote mode
                         if shared_state.relay_running then
                             mcp_self:stopServer()
                             mcp_self:startServer()
                             UIManager:show(Notification:new {
-                                text = _("Server restarting with new Device ID"),
+                                text = _("Server restarting with new credentials"),
                                 timeout = 3,
                             })
                         else
                             UIManager:show(Notification:new {
-                                text = _("Device ID will be regenerated on next connect"),
+                                text = _("New credentials will be generated on next connect"),
                                 timeout = 3,
                             })
                         end
@@ -430,6 +464,37 @@ function MCP:buildSettingsMenu()
                         end
                     end,
                 })
+            end,
+        },
+        {
+            text_func = function()
+                local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
+                if passcode then
+                    return T(_("Passcode: %1"), passcode)
+                else
+                    return _("Passcode: (not available)")
+                end
+            end,
+            help_text = _("Your passcode for MCP client authentication. Only visible until you restart KOReader."),
+            enabled_func = function()
+                local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
+                return self:getServerMode() == "remote" and passcode ~= nil
+            end,
+            keep_menu_open = true,
+            callback = function()
+                local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
+                local device_id = G_reader_settings:readSetting("mcp_relay_device_id")
+                local relay_url = G_reader_settings:readSetting("mcp_relay_url", DEFAULT_RELAY_URL)
+                local public_url = device_id and (relay_url .. "/" .. device_id .. "/mcp") or _("(connect first)")
+                local token_endpoint = relay_url .. "/oauth/token"
+
+                if passcode and device_id then
+                    self:showFirstRegistrationInfo(device_id, passcode, public_url, token_endpoint)
+                else
+                    UIManager:show(InfoMessage:new {
+                        text = _("Passcode is only available after generating credentials. Reset your Device ID to generate new credentials."),
+                    })
+                end
             end,
             separator = true,
         },
@@ -881,15 +946,20 @@ function MCP:showSetupInstructions()
     local instructions
 
     if mode == "remote" and shared_state.relay_url then
+        -- Get passcode if available
+        local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
+        local auth_info = ""
+        if passcode then
+            auth_info = _("\n\nAuthentication:\n" ..
+                "• Username: ") .. (shared_state.relay:getDeviceId() or _("(device ID)")) .. _("\n" ..
+                "• Password: ") .. passcode
+        end
+
         instructions = _("To connect an MCP client:\n\n" ..
             "Claude Desktop/Mobile:\n" ..
             "1. Open Settings → MCP Servers\n" ..
-            "2. Add new server with URL:\n   ") .. shared_state.relay_url .. _("\n" ..
+            "2. Add new server with URL:\n   ") .. shared_state.relay_url .. auth_info .. _("\n" ..
             "3. Save and start chatting!\n\n" ..
-            "ChatGPT (with MCP plugin):\n" ..
-            "1. Enable MCP plugin\n" ..
-            "2. Configure server URL\n" ..
-            "3. Connect and chat\n\n" ..
             "The QR code contains the server URL for easy mobile setup.")
     else
         local ip = shared_state.server:getLocalIP()
@@ -906,6 +976,116 @@ function MCP:showSetupInstructions()
     UIManager:show(InfoMessage:new {
         text = instructions,
     })
+end
+
+-- Show first registration info with QR code and passcode
+-- Called only when a device gets a new passcode (first time registration)
+function MCP:showFirstRegistrationInfo(device_id, passcode, public_url, token_endpoint)
+    local mcp_self = self
+
+    -- Create the dialog content
+    local dialog_content = VerticalGroup:new { align = "center" }
+
+    -- Title text
+    local title_widget = TextWidget:new {
+        text = _("Device Registered!"),
+        face = Font:getFace("cfont", 24),
+    }
+    table.insert(dialog_content, CenterContainer:new {
+        dimen = { w = Screen:getWidth() * 0.8, h = title_widget:getSize().h },
+        title_widget,
+    })
+    table.insert(dialog_content, VerticalSpan:new { width = Size.padding.large })
+
+    -- QR code with the URL
+    local qr_size = math.min(Screen:getWidth(), Screen:getHeight()) * 0.4
+    local qr_widget = QRWidget:new {
+        text = public_url,
+        width = qr_size,
+        height = qr_size,
+    }
+    table.insert(dialog_content, CenterContainer:new {
+        dimen = { w = Screen:getWidth() * 0.8, h = qr_size },
+        qr_widget,
+    })
+    table.insert(dialog_content, VerticalSpan:new { width = Size.padding.default })
+
+    -- URL text
+    local url_widget = TextBoxWidget:new {
+        text = public_url,
+        width = Screen:getWidth() * 0.75,
+        face = Font:getFace("cfont", 16),
+        alignment = "center",
+    }
+    table.insert(dialog_content, CenterContainer:new {
+        dimen = { w = Screen:getWidth() * 0.8, h = url_widget:getSize().h },
+        url_widget,
+    })
+    table.insert(dialog_content, VerticalSpan:new { width = Size.padding.large })
+
+    -- Passcode display (large and prominent)
+    local passcode_label = TextWidget:new {
+        text = _("Your passcode:"),
+        face = Font:getFace("cfont", 16),
+    }
+    table.insert(dialog_content, CenterContainer:new {
+        dimen = { w = Screen:getWidth() * 0.8, h = passcode_label:getSize().h },
+        passcode_label,
+    })
+
+    local passcode_widget = TextWidget:new {
+        text = passcode,
+        face = Font:getFace("cfont", 36),
+        bold = true,
+    }
+    table.insert(dialog_content, CenterContainer:new {
+        dimen = { w = Screen:getWidth() * 0.8, h = passcode_widget:getSize().h },
+        passcode_widget,
+    })
+    table.insert(dialog_content, VerticalSpan:new { width = Size.padding.default })
+
+    -- Warning text
+    local warning_widget = TextBoxWidget:new {
+        text = _("Save this passcode! You'll need it to authenticate your AI assistant. It won't be shown again."),
+        width = Screen:getWidth() * 0.75,
+        face = Font:getFace("cfont", 14),
+        alignment = "center",
+    }
+    table.insert(dialog_content, CenterContainer:new {
+        dimen = { w = Screen:getWidth() * 0.8, h = warning_widget:getSize().h },
+        warning_widget,
+    })
+
+    -- Create the dialog with buttons
+    local details_dialog
+    details_dialog = ButtonDialog:new {
+        title = _("MCP Server Setup"),
+        width_factor = 0.9,
+        buttons = {
+            {
+                {
+                    text = _("Show Setup Instructions"),
+                    callback = function()
+                        UIManager:close(details_dialog)
+                        mcp_self:showSetupInstructions()
+                    end,
+                },
+            },
+            {
+                {
+                    text = _("Got it"),
+                    callback = function()
+                        UIManager:close(details_dialog)
+                    end,
+                },
+            },
+        },
+    }
+
+    -- Add the content to the dialog
+    details_dialog:addWidget(dialog_content)
+
+    UIManager:show(details_dialog)
 end
 
 -- Idle timeout management

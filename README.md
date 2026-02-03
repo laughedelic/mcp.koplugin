@@ -117,22 +117,22 @@ Assistant will use the MCP resources and tools to understand which book you're r
 The plugin exposes these resources:
 
 #### Current Book Resources
-| Resource URI                    | Description                                    |
-| ------------------------------- | ---------------------------------------------- |
+| Resource URI                    | Description                                        |
+| ------------------------------- | -------------------------------------------------- |
 | `book://current/context`        | Current reading context (page, chapter, selection) |
-| `book://current/metadata`       | Book metadata (title, author, progress, etc.)  |
-| `book://current/toc`            | Table of contents                              |
-| `book://current/bookmarks`      | Bookmarks and highlights in the current book   |
-| `book://current/pages/{range}`  | Text from specific pages (e.g., `5` or `10-15`) |
-| `book://current/chapters/{idx}` | Text from a specific chapter by index          |
+| `book://current/metadata`       | Book metadata (title, author, progress, etc.)      |
+| `book://current/toc`            | Table of contents                                  |
+| `book://current/bookmarks`      | Bookmarks and highlights in the current book       |
+| `book://current/pages/{range}`  | Text from specific pages (e.g., `5` or `10-15`)    |
+| `book://current/chapters/{idx}` | Text from a specific chapter by index              |
 
 #### Library Resources
-| Resource URI              | Description                                    |
-| ------------------------- | ---------------------------------------------- |
-| `library://books`         | List of all books in the library               |
-| `library://collections`   | Book collections/shelves                       |
-| `library://history`       | Reading history                                |
-| `library://books/{path}`  | Metadata for a specific book by path           |
+| Resource URI             | Description                          |
+| ------------------------ | ------------------------------------ |
+| `library://books`        | List of all books in the library     |
+| `library://collections`  | Book collections/shelves             |
+| `library://history`      | Reading history                      |
+| `library://books/{path}` | Metadata for a specific book by path |
 
 ### Tools
 
@@ -232,45 +232,50 @@ graph LR
   B --> A
 ```
 
-1. Your e-reader connects to the cloud relay with a device ID
-2. The relay assigns a unique URL for your device
-3. You use that URL to connect your AI assistant
-4. The e-reader polls the relay for incoming requests
-5. When your AI assistant sends a request, it's queued at the relay
-6. The e-reader picks it up on the next poll and sends the response back
+1. **On first connection**, your e-reader generates a device ID (based on your device model) and a random 6-digit passcode
+2. The passcode is hashed (SHA-256) and sent to the relay — the plaintext passcode never leaves your device
+3. The relay assigns a unique URL for your device
+4. Your e-reader displays the passcode to you (save it!)
+5. You configure your AI assistant with the URL and use the passcode to authenticate
+6. AI clients exchange the passcode for a short-lived access token
 
-After the initial device registration:
+#### Authentication Flow
 
-```mermaid
-sequenceDiagram
-  participant E as E-Reader
-  participant R as Cloud Relay
-  participant C as AI Client
-  
-  loop Keep connection alive
-    E->>R: Poll for requests
-    R-->>E: No requests / pending requests
-  end
-  
-  C->>R: Send MCP request
-  Note over R: Queue request
-  E->>R: Poll for requests
-  R->>E: Return queued request
-  E->>R: Send response
-  R->>C: Forward response
-```
+When you first start the MCP server in remote mode, you'll see:
+- A QR code with your relay URL
+- Your unique **6-digit passcode**
+- Instructions for connecting your AI assistant
+
+**Save your passcode!** It's shown only once during first registration. You'll need it to:
+- Configure AI clients (Claude, etc.) to access your device
+- Authenticate whenever you set up a new AI client
+
+To connect an MCP client:
+1. Add the relay URL to your MCP client (e.g., Claude Desktop settings)
+2. When prompted for authentication:
+   - **Username**: Your device ID (e.g., `KoboClara-abc1`)
+   - **Password**: Your 6-digit passcode
+
+The relay implements OAuth 2.0 password grant, so MCP clients that support OAuth will handle authentication automatically.
+
+> [!TIP]
+> You can view your passcode in the MCP settings menu (**Settings → Network → MCP server**) as long as you haven't restarted KOReader since the first registration.
 
 > [!IMPORTANT]
-> The relay is just a bridge forwarding requests between your e-reader and AI clients. It does not store any book content or personal data. Request logs might be kept temporarily for debugging, but no content is stored long-term.
+> The relay is just a bridge forwarding requests between your e-reader and AI clients. It does not store any book content or personal data. The relay never receives your actual passcode — only its hash.
 
-The relay implementation is open source: [koreader-mcp-cloud-relay](https://github.com/laughedelic/koreader-mcp-cloud-relay). You can deploy your own instance for full control. By default, plugin uses the relay I deployed for myself. I'll be sharing it as long as it's within the free tier limits.
+The relay implementation is open source: [mcp-relay-cloudflare](https://github.com/laughedelic/mcp-relay-cloudflare). You can deploy your own instance for full control. By default, plugin uses the relay I deployed for myself. I'll be sharing it as long as it's within the free tier limits.
 
 #### Security
 
-- Your device ID acts as a secret token — don't share your relay URL publicly
+- **Zero-knowledge passcode**: Passcode is generated locally and only the SHA-256 hash is sent to the relay
+- **OAuth 2.0 authentication**: MCP clients must authenticate with your device ID and passcode
+- **Industry-standard JWT**: Uses the [jose](https://github.com/panva/jose) library for secure token handling
+- **Short-lived tokens**: Access tokens expire in 1 hour
+- **Audience validation**: Tokens are bound to your specific device
 - All traffic is encrypted (HTTPS)
-- The relay doesn't store any book content, only forwards requests
-- You can reset your device ID anytime from the settings menu
+- The relay doesn't store any book content, only forwards authenticated requests
+- You can reset your device ID and passcode anytime from the settings menu
 
 > [!WARNING]
 > Current implementation does not implement SSL certificate verification for the relay server 
