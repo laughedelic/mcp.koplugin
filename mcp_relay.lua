@@ -98,7 +98,7 @@ function MCPRelay:generateDeviceId()
         suffix = suffix .. chars:sub(idx, idx)
     end
 
-    return clean_model .. "-" .. suffix
+    return (clean_model .. "-" .. suffix):lower()
 end
 
 -- Get a generalized device type label (Kindle, Kobo, etc.) when possible
@@ -163,7 +163,11 @@ end
 
 -- Set the device ID (for reconnection with same ID)
 function MCPRelay:setDeviceId(device_id)
-    self.device_id = device_id
+    if device_id then
+        self.device_id = tostring(device_id):lower()
+    else
+        self.device_id = nil
+    end
 end
 
 -- Set a human-readable device name
@@ -555,6 +559,7 @@ function MCPRelay:register(callback)
     if is_first_registration then
         -- Generate new credentials locally (keep existing device_id if pre-generated)
         local device_id = self.device_id or self:generateDeviceId()
+        device_id = tostring(device_id):lower()
         local passcode = self:generatePasscode()
         local passcode_hash = self:hashPasscode(passcode)
         self.device_id = device_id
