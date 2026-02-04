@@ -102,7 +102,15 @@ Once connected, you can ask your AI assistant questions like:
 - "Add a note with a translation of this selected text"
 - "Highlight this important passage"
 
-Assistant will use the MCP resources and tools to understand which book you're reading, what's on your screen, search within the book, and provide relevant responses. You can also ask the assistant to add highlights and notes to your book based on your conversation.
+#### Multi-Book Discussions
+
+You can now reference multiple books in a single conversation:
+
+- "Compare the themes in [Book A] and [Book B]"
+- "What did the author say about [topic] in their other book [Book C]?"
+- "Get metadata for all the books in my library about [subject]"
+
+The assistant will use the MCP resources and tools to understand which book you're reading, what's on your screen, search within the book, and provide relevant responses. You can also ask the assistant to add highlights and notes to your book based on your conversation.
 
 > [!TIP]
 > It might be helpful to create a separate project with more focused instructions for using KOReader MCP or even for a particular book that you want to discuss with your AI assistant. This will keep the context relevant and maintain separate memory for different books or topics.
@@ -138,14 +146,16 @@ The plugin exposes these resources:
 
 The plugin provides these callable tools:
 
+> **Note**: All tools now support an optional `book` parameter (file path) to reference specific books. When omitted, the currently open book is used, or the last read book if none is open. Most tools require the book to be currently open to access its content, except `get_book_metadata` which can retrieve metadata for any book.
+
 | Tool                  | Description                                                                  | Parameters                                                                 |
 | --------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `get_reading_context` | Get current reading context (book, chapter, page, selection/highlight focus) | `extra_pages_before` (optional), `extra_pages_after` (optional)            |
-| `get_book_metadata`   | Get full book metadata (for clients without resource support)                | None                                                                       |
-| `read_pages`          | Read text from specific pages or chapters                                    | `pages` (e.g., "5" or "10-15"), `chapter` (index)                          |
-| `search_book`         | Search for text in the book                                                  | `query`, `case_sensitive` (optional)                                       |
-| `goto_page`           | Navigate to a specific page                                                  | `page`                                                                     |
-| `annotate`            | Add highlight or note to text                                                | `note` (optional), `text` (optional), `start` (optional), `end` (optional) |
+| `get_reading_context` | Get current reading context (book, chapter, page, selection/highlight focus) | `book` (optional), `extra_pages_before` (optional), `extra_pages_after` (optional)            |
+| `get_book_metadata`   | Get full book metadata (works with any book, open or closed)                | `book` (optional)                                                                       |
+| `read_pages`          | Read text from specific pages or chapters                                    | `book` (optional), `pages` (e.g., "5" or "10-15"), `chapter` (index)                          |
+| `search_book`         | Search for text in the book                                                  | `book` (optional), `query`, `case_sensitive` (optional)                                       |
+| `goto_page`           | Navigate to a specific page                                                  | `book` (optional), `page`                                                                     |
+| `annotate`            | Add highlight or note to text                                                | `book` (optional), `note` (optional), `text` (optional), `start` (optional), `end` (optional) |
 
 #### Tool Annotations
 
