@@ -427,7 +427,7 @@ function MCPTools:getReadingContext(args)
     if not is_current_book then
         return {
             content = {
-                { type = "text", text = "Error: This tool requires the book to be currently open. The requested book '" .. book_file .. "' is not open. Please open it first, or use get_book_metadata to get information about closed books." },
+                { type = "text", text = "Error: This tool requires the book to be currently open. The requested book '" .. book_file .. "' is not open. Please open it first, or use the library://books/" .. book_file .. " resource or get_book_metadata tool to get information about closed books." },
             },
             isError = true,
         }
@@ -592,7 +592,7 @@ function MCPTools:getBookMetadata(args)
         local props = doc_settings:readSetting("doc_props") or {}
         metadata = {
             file = book_file,
-            title = props.title or book_file:match("([^/]+)$"),
+            title = props.title or book_file:match("([^/]+)$"):gsub("%.%w+$", ""), -- Remove extension
             authors = formatAuthors(props.authors),
             language = props.language,
             series = props.series,
