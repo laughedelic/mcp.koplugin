@@ -10,7 +10,8 @@
     2. Device registers with relay, sending deviceId + SHA-256 hash of passcode
     3. Relay stores the hash, returns public MCP URL
     4. Device shows passcode to user (who enters it in Claude Desktop / other MCP clients)
-    5. MCP client authenticates via OAuth password grant (deviceId + passcode → JWT token)
+     5. MCP client authenticates via OAuth 2.1 Authorization Code + PKCE
+         (user enters device ID + passcode at /authorize; client exchanges code at /oauth/token)
     6. Device polls for incoming requests, forwards to local MCP server
 
     Implementation notes:

@@ -236,8 +236,8 @@ graph LR
 2. The passcode is hashed (SHA-256) and sent to the relay — the plaintext passcode never leaves your device
 3. The relay assigns a unique URL for your device
 4. Your e-reader displays the passcode to you (save it!)
-5. You configure your AI assistant with the URL and use the passcode to authenticate
-6. AI clients exchange the passcode for a short-lived access token
+5. You configure your AI assistant with the URL and authenticate via the OAuth login screen using the passcode
+6. AI clients exchange the authorization code for a short-lived access token
 
 #### Authentication Flow
 
@@ -247,7 +247,7 @@ When you first start the MCP server in remote mode, you'll see:
 - Your unique **6-digit passcode**
 - Instructions for connecting your AI assistant
 
-The relay uses OAuth 2.1 Authorization Code flow, so MCP clients that support OAuth will handle authentication automatically.
+The relay uses OAuth 2.1 Authorization Code flow with PKCE, so MCP clients that support OAuth will handle authentication automatically.
 
 > [!TIP]
 > You can view your credentials in the MCP settings menu (**Settings → Network → MCP server**)
@@ -260,7 +260,7 @@ The relay implementation is open source: [mcp-relay-cloudflare](https://github.c
 #### Security
 
 - **Zero-knowledge passcode**: Passcode is generated locally and only the SHA-256 hash is sent to the relay
-- **OAuth 2.0 authentication**: MCP clients must authenticate with your device ID and passcode
+- **OAuth 2.1 Authorization Code + PKCE**: MCP clients authenticate via the /authorize login screen using your device ID + passcode, then exchange a code for a token
 - **Short-lived tokens**: Access tokens expire in 1 hour
 - **Audience validation**: Tokens are bound to your specific device
 - All traffic is encrypted (HTTPS)
