@@ -129,6 +129,17 @@ end
 -- Helper: Get book context for enriching tool responses
 --------------------------------------------------------------------------------
 
+-- Helper: Extract title from filename by removing path and extension
+local function getTitleFromFilename(filepath)
+    if not filepath or filepath == "" then
+        return "Unknown"
+    end
+    local filename = filepath:match("([^/]+)$") or filepath
+    -- Remove extension
+    local title = filename:gsub("%.%w+$", "")
+    return title ~= "" and title or "Unknown"
+end
+
 -- Format authors as a comma-separated string
 local function formatAuthors(authors)
     if not authors then
@@ -427,7 +438,7 @@ function MCPTools:getReadingContext(args)
     if not is_current_book then
         return {
             content = {
-                { type = "text", text = "Error: This tool requires the book to be currently open. The requested book '" .. book_file .. "' is not open. Please open it first, or use the library://books/" .. book_file .. " resource or get_book_metadata tool to get information about closed books." },
+                { type = "text", text = "Error: This tool requires the book to be currently open. The requested book '" .. book_file .. "' is not open. Please open it first, or use get_book_metadata to get information about closed books." },
             },
             isError = true,
         }
@@ -442,7 +453,7 @@ function MCPTools:getReadingContext(args)
     local page_count = doc:getPageCount()
 
     -- Build structured context with sections:
-    -- book: title, authors, total_pages
+    -- book: title, authors, total_pages, file (added to identify which book in multi-book scenarios)
     -- chapter: name, start_page, end_page
     -- selection: text the user has selected (optional)
     -- current_page: number, text (with highlights marked inline)
@@ -452,7 +463,7 @@ function MCPTools:getReadingContext(args)
             title = props.title or "Unknown",
             authors = formatAuthors(props.authors),
             total_pages = page_count,
-            file = book_file,
+            file = book_file, -- Added to support multi-book references
         },
     }
 
@@ -592,7 +603,7 @@ function MCPTools:getBookMetadata(args)
         local props = doc_settings:readSetting("doc_props") or {}
         metadata = {
             file = book_file,
-            title = props.title or book_file:match("([^/]+)$"):gsub("%.%w+$", ""), -- Remove extension
+            title = props.title or getTitleFromFilename(book_file),
             authors = formatAuthors(props.authors),
             language = props.language,
             series = props.series,
