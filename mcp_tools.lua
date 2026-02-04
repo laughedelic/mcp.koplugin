@@ -92,8 +92,53 @@ function MCPTools:setResources(resources)
 end
 
 --------------------------------------------------------------------------------
+-- Helper: Resolve book reference to determine which book to use
+--------------------------------------------------------------------------------
+-- Returns: book_file (string), is_current_book (boolean), error_message (string or nil)
+-- book_file: The resolved file path of the book to use
+-- is_current_book: true if the resolved book is currently open
+-- error_message: nil on success, error string on failure
+function MCPTools:resolveBookReference(book_param)
+    -- If book parameter is provided, use it
+    if book_param and book_param ~= "" then
+        -- Check if this is the currently open book
+        if self.ui and self.ui.document and self.ui.document.file == book_param then
+            return book_param, true, nil
+        end
+        -- Different book specified
+        return book_param, false, nil
+    end
+
+    -- No book parameter - use current book if open
+    if self.ui and self.ui.document then
+        return self.ui.document.file, true, nil
+    end
+
+    -- No book open, try to get last read book from history
+    local ok, ReadHistory = pcall(require, "readhistory")
+    if ok and ReadHistory and ReadHistory.hist and #ReadHistory.hist > 0 then
+        local last_book = ReadHistory.hist[1]
+        return last_book.file, false, nil
+    end
+
+    -- No book available
+    return nil, false, "No book is currently open and no reading history available"
+end
+
+--------------------------------------------------------------------------------
 -- Helper: Get book context for enriching tool responses
 --------------------------------------------------------------------------------
+
+-- Helper: Extract title from filename by removing path and extension
+local function getTitleFromFilename(filepath)
+    if not filepath or filepath == "" then
+        return "Unknown"
+    end
+    local filename = filepath:match("([^/]+)$") or filepath
+    -- Remove extension
+    local title = filename:gsub("%.%w+$", "")
+    return title ~= "" and title or "Unknown"
+end
 
 -- Format authors as a comma-separated string
 local function formatAuthors(authors)
@@ -176,6 +221,10 @@ function MCPTools:list()
         inputSchema = {
             type = "object",
             properties = {
+                book = {
+                    type = "string",
+                    description = "Optional: File path of the book to read from. If not provided, uses the currently open book, or the last read book if none is open. The book must be currently open to access its content.",
+                },
                 extra_pages_before = {
                     type = "number",
                     description = "Number of pages before current page to include (default: 0, max: 5)",
@@ -199,10 +248,15 @@ function MCPTools:list()
     table.insert(tools, {
         name = "get_book_metadata",
         description =
-        "Get full metadata about the currently open book (title, authors, language, series, description, format, page count, reading progress). Use this for detailed book information. The book://current/metadata resource provides the same data.",
+        "Get full metadata about a book (title, authors, language, series, description, format, page count, reading progress). The book://current/metadata resource provides the same data for the currently open book. This tool can access metadata for any book, even if it's not currently open.",
         inputSchema = {
             type = "object",
-            properties = {},
+            properties = {
+                book = {
+                    type = "string",
+                    description = "Optional: File path of the book to get metadata from. If not provided, uses the currently open book, or the last read book if none is open. Metadata is available for any book.",
+                },
+            },
         },
         annotations = {
             readOnlyHint = true,
@@ -216,10 +270,14 @@ function MCPTools:list()
     table.insert(tools, {
         name = "read_pages",
         description =
-        "Read text content from specific pages. Use this to explore context beyond the current page, such as reading ahead, going back, or reading a specific chapter.",
+        "Read text content from specific pages. Use this to explore context beyond the current page, such as reading ahead, going back, or reading a specific chapter. The book must be currently open to read its content.",
         inputSchema = {
             type = "object",
             properties = {
+                book = {
+                    type = "string",
+                    description = "Optional: File path of the book to read from. If not provided, uses the currently open book, or the last read book if none is open. The book must be currently open to access its content.",
+                },
                 pages = {
                     type = "string",
                     description = "Page number or range to read (e.g., '5', '10-15'). Maximum 20 pages per request.",
@@ -242,10 +300,14 @@ function MCPTools:list()
     -- Search in book
     table.insert(tools, {
         name = "search_book",
-        description = "Search for text in the current book",
+        description = "Search for text in a book. The book must be currently open to search its content.",
         inputSchema = {
             type = "object",
             properties = {
+                book = {
+                    type = "string",
+                    description = "Optional: File path of the book to search in. If not provided, uses the currently open book, or the last read book if none is open. The book must be currently open to search its content.",
+                },
                 query = {
                     type = "string",
                     description = "Search query text",
@@ -268,10 +330,14 @@ function MCPTools:list()
     -- Navigate to page
     table.insert(tools, {
         name = "goto_page",
-        description = "Navigate to a specific page in the book",
+        description = "Navigate to a specific page in the book. The book must be currently open.",
         inputSchema = {
             type = "object",
             properties = {
+                book = {
+                    type = "string",
+                    description = "Optional: File path of the book to navigate in. If not provided, uses the currently open book, or the last read book if none is open. The book must be currently open to navigate.",
+                },
                 page = {
                     type = "number",
                     description = "Page number to navigate to (1-indexed)",
@@ -291,10 +357,14 @@ function MCPTools:list()
     table.insert(tools, {
         name = "annotate",
         description =
-        "Add a highlight or note to text. Creates a highlight when note is omitted. Behavior depends on inputs: (1) No text/positions: uses the current UI selection (fails if none). (2) Only start/end positions: annotates that location (e.g. positions from search_book results). (3) Only text: searches for the text in the book to find its position automatically.",
+        "Add a highlight or note to text. Creates a highlight when note is omitted. Behavior depends on inputs: (1) No text/positions: uses the current UI selection (fails if none). (2) Only start/end positions: annotates that location (e.g. positions from search_book results). (3) Only text: searches for the text in the book to find its position automatically. The book must be currently open.",
         inputSchema = {
             type = "object",
             properties = {
+                book = {
+                    type = "string",
+                    description = "Optional: File path of the book to annotate. If not provided, uses the currently open book, or the last read book if none is open. The book must be currently open to annotate.",
+                },
                 note = {
                     type = "string",
                     description =
@@ -327,18 +397,8 @@ function MCPTools:list()
 end
 
 function MCPTools:call(name, arguments)
-    if not self.ui or not self.ui.document then
-        return {
-            content = {
-                {
-                    type = "text",
-                    text = "Error: No book is currently open",
-                },
-            },
-            isError = true,
-        }
-    end
-
+    -- No longer check for open document here - let each tool handle it via resolveBookReference
+    
     -- Route to appropriate tool handler
     if name == "get_reading_context" then
         return self:getReadingContext(arguments)
@@ -361,15 +421,29 @@ function MCPTools:getReadingContext(args)
     -- Return reading context as both structured data and text (for compatibility)
     -- plus a resource link (for clients that can subscribe to updates)
 
-    if not self.ui or not self.ui.document then
+    args = args or {}
+    
+    -- Resolve which book to use
+    local book_file, is_current_book, error_msg = self:resolveBookReference(args.book)
+    if not book_file then
         return {
             content = {
-                { type = "text", text = "No document is currently open" },
+                { type = "text", text = "Error: " .. (error_msg or "Unknown error") },
             },
+            isError = true,
+        }
+    end
+    
+    -- Check if the book is currently open (required for reading context)
+    if not is_current_book then
+        return {
+            content = {
+                { type = "text", text = "Error: This tool requires the book to be currently open. The requested book '" .. book_file .. "' is not open. Please open it first, or use get_book_metadata to get information about closed books." },
+            },
+            isError = true,
         }
     end
 
-    args = args or {}
     local extra_pages_before = math.min(args.extra_pages_before or 0, 5)
     local extra_pages_after = math.min(args.extra_pages_after or 0, 5)
 
@@ -379,7 +453,7 @@ function MCPTools:getReadingContext(args)
     local page_count = doc:getPageCount()
 
     -- Build structured context with sections:
-    -- book: title, authors, total_pages
+    -- book: title, authors, total_pages, file (added to identify which book in multi-book scenarios)
     -- chapter: name, start_page, end_page
     -- selection: text the user has selected (optional)
     -- current_page: number, text (with highlights marked inline)
@@ -389,6 +463,7 @@ function MCPTools:getReadingContext(args)
             title = props.title or "Unknown",
             authors = formatAuthors(props.authors),
             total_pages = page_count,
+            file = book_file, -- Added to support multi-book references
         },
     }
 
@@ -472,40 +547,83 @@ end
 
 function MCPTools:getBookMetadata(args)
     -- Return full book metadata for clients that don't support resources
-    if not self.ui or not self.ui.document then
+    -- This tool can work with any book, even if not currently open
+    
+    args = args or {}
+    local DocSettings = require("docsettings")
+    
+    -- Resolve which book to use
+    local book_file, is_current_book, error_msg = self:resolveBookReference(args.book)
+    if not book_file then
         return {
             content = {
-                { type = "text", text = "No document is currently open" },
+                { type = "text", text = "Error: " .. (error_msg or "Unknown error") },
             },
+            isError = true,
         }
     end
-
-    local doc = self.ui.document
-    local props = doc:getProps()
-    local DocSettings = require("docsettings")
-
-    local metadata = {
-        title = props.title or "Unknown",
-        authors = formatAuthors(props.authors),
-        language = props.language,
-        series = props.series,
-        keywords = props.keywords,
-        description = props.description,
-        file = doc.file,
-        format = doc.file:match("%.([^.]+)$"),
-        total_pages = doc:getPageCount(),
-    }
-
-    -- Get reading progress from settings
-    local doc_settings = DocSettings:open(doc.file)
-    if doc_settings then
-        metadata.percent_finished = doc_settings:readSetting("percent_finished") or 0
-        metadata.current_page = doc_settings:readSetting("last_page") or doc:getCurrentPage()
+    
+    local metadata = {}
+    
+    -- If the book is currently open, get full metadata from document
+    if is_current_book and self.ui and self.ui.document then
+        local doc = self.ui.document
+        local props = doc:getProps()
+        
+        metadata = {
+            title = props.title or "Unknown",
+            authors = formatAuthors(props.authors),
+            language = props.language,
+            series = props.series,
+            keywords = props.keywords,
+            description = props.description,
+            file = doc.file,
+            format = doc.file:match("%.([^.]+)$"),
+            total_pages = doc:getPageCount(),
+        }
+        
+        -- Get reading progress from settings
+        local doc_settings = DocSettings:open(doc.file)
+        if doc_settings then
+            metadata.percent_finished = doc_settings:readSetting("percent_finished") or 0
+            metadata.current_page = doc_settings:readSetting("last_page") or doc:getCurrentPage()
+        end
+    else
+        -- Book is not currently open - get metadata from DocSettings
+        local doc_settings = DocSettings:open(book_file)
+        if not doc_settings then
+            return {
+                content = {
+                    { type = "text", text = "Error: Book not found or no metadata available for '" .. book_file .. "'" },
+                },
+                isError = true,
+            }
+        end
+        
+        local props = doc_settings:readSetting("doc_props") or {}
+        metadata = {
+            file = book_file,
+            title = props.title or getTitleFromFilename(book_file),
+            authors = formatAuthors(props.authors),
+            language = props.language,
+            series = props.series,
+            keywords = props.keywords,
+            description = props.description,
+            format = book_file:match("%.([^.]+)$"),
+            percent_finished = doc_settings:readSetting("percent_finished") or 0,
+            last_page = doc_settings:readSetting("last_page"),
+        }
+        
+        -- Note: total_pages not available when book is closed
+        -- current_page comes from last_page in settings
+        if metadata.last_page then
+            metadata.current_page = metadata.last_page
+        end
     end
 
     -- Build text representation
     local textResponse = "Book Metadata\n" .. string.rep("=", 40) .. "\n\n"
-    textResponse = textResponse .. "Title: " .. metadata.title .. "\n"
+    textResponse = textResponse .. "Title: " .. (metadata.title or "Unknown") .. "\n"
     if metadata.authors then
         textResponse = textResponse .. "Authors: " .. metadata.authors .. "\n"
     end
@@ -519,21 +637,35 @@ function MCPTools:getBookMetadata(args)
         textResponse = textResponse .. "\nDescription:\n" .. metadata.description .. "\n"
     end
     textResponse = textResponse .. "\nFormat: " .. (metadata.format or "unknown") .. "\n"
-    textResponse = textResponse .. "Pages: " .. metadata.total_pages .. "\n"
+    if metadata.total_pages then
+        textResponse = textResponse .. "Pages: " .. metadata.total_pages .. "\n"
+    end
     textResponse = textResponse .. "Progress: " .. math.floor((metadata.percent_finished or 0) * 100) .. "%\n"
-    textResponse = textResponse .. "\nResource: book://current/metadata\n"
+    
+    if is_current_book then
+        textResponse = textResponse .. "\nResource: book://current/metadata\n"
+    else
+        textResponse = textResponse .. "\nFile: " .. book_file .. "\n"
+        textResponse = textResponse .. "(Book is not currently open)\n"
+    end
+
+    local content = {
+        { type = "text", text = textResponse },
+    }
+    
+    -- Only add resource link if this is the currently open book
+    if is_current_book then
+        table.insert(content, {
+            type = "resource_link",
+            uri = "book://current/metadata",
+            name = "Book Metadata",
+            description = "Full metadata about the currently open book",
+            mimeType = "application/json",
+        })
+    end
 
     return {
-        content = {
-            { type = "text", text = textResponse },
-            {
-                type = "resource_link",
-                uri = "book://current/metadata",
-                name = "Book Metadata",
-                description = "Full metadata about the currently open book",
-                mimeType = "application/json",
-            },
-        },
+        content = content,
         structuredContent = metadata,
     }
 end
@@ -675,11 +807,26 @@ function MCPTools:formatReadingContext(context)
 end
 
 function MCPTools:readPages(args)
-    if not self.ui or not self.ui.document then
+    args = args or {}
+    
+    -- Resolve which book to use
+    local book_file, is_current_book, error_msg = self:resolveBookReference(args.book)
+    if not book_file then
         return {
             content = {
-                { type = "text", text = "No document is currently open" },
+                { type = "text", text = "Error: " .. (error_msg or "Unknown error") },
             },
+            isError = true,
+        }
+    end
+    
+    -- Check if the book is currently open (required for reading pages)
+    if not is_current_book then
+        return {
+            content = {
+                { type = "text", text = "Error: This tool requires the book to be currently open. The requested book '" .. book_file .. "' is not open. Please open it first." },
+            },
+            isError = true,
         }
     end
 
@@ -748,11 +895,33 @@ function MCPTools:readPages(args)
 end
 
 function MCPTools:searchBook(args)
+    args = args or {}
     local query = args.query
     if not query or query == "" then
         return {
             content = {
                 { type = "text", text = "Error: Empty search query" },
+            },
+            isError = true,
+        }
+    end
+    
+    -- Resolve which book to use
+    local book_file, is_current_book, error_msg = self:resolveBookReference(args.book)
+    if not book_file then
+        return {
+            content = {
+                { type = "text", text = "Error: " .. (error_msg or "Unknown error") },
+            },
+            isError = true,
+        }
+    end
+    
+    -- Check if the book is currently open (required for searching)
+    if not is_current_book then
+        return {
+            content = {
+                { type = "text", text = "Error: This tool requires the book to be currently open. The requested book '" .. book_file .. "' is not open. Please open it first." },
             },
             isError = true,
         }
@@ -865,11 +1034,33 @@ function MCPTools:searchBook(args)
 end
 
 function MCPTools:gotoPage(args)
+    args = args or {}
     local page = tonumber(args.page)
     if not page then
         return {
             content = {
                 { type = "text", text = "Error: Invalid page number" },
+            },
+            isError = true,
+        }
+    end
+    
+    -- Resolve which book to use
+    local book_file, is_current_book, error_msg = self:resolveBookReference(args.book)
+    if not book_file then
+        return {
+            content = {
+                { type = "text", text = "Error: " .. (error_msg or "Unknown error") },
+            },
+            isError = true,
+        }
+    end
+    
+    -- Check if the book is currently open (required for navigation)
+    if not is_current_book then
+        return {
+            content = {
+                { type = "text", text = "Error: This tool requires the book to be currently open. The requested book '" .. book_file .. "' is not open. Please open it first to navigate to a page." },
             },
             isError = true,
         }
@@ -898,6 +1089,29 @@ function MCPTools:annotate(args)
     -- This function adds a highlight or note to text
     -- If note is provided, it creates a highlight with a note
     -- If note is omitted, it creates just a highlight
+    
+    args = args or {}
+    
+    -- Resolve which book to use
+    local book_file, is_current_book, error_msg = self:resolveBookReference(args.book)
+    if not book_file then
+        return {
+            content = {
+                { type = "text", text = "Error: " .. (error_msg or "Unknown error") },
+            },
+            isError = true,
+        }
+    end
+    
+    -- Check if the book is currently open (required for annotation)
+    if not is_current_book then
+        return {
+            content = {
+                { type = "text", text = "Error: This tool requires the book to be currently open. The requested book '" .. book_file .. "' is not open. Please open it first to add annotations." },
+            },
+            isError = true,
+        }
+    end
 
     local Event = require("ui/event")
 
