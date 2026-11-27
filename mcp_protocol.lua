@@ -28,6 +28,7 @@ local function isJsonObject(v)
     return false
 end
 local logger = require("logger")
+local PLUGIN_VERSION = require("mcp_version")
 local MRTR = require("mcp_mrtr")
 
 -- Stateless protocol versions (per-request _meta, no initialize), newest first
@@ -82,7 +83,7 @@ local MCPProtocol = {
     serverInfo = {
         name = "koreader-mcp",
         title = "KOReader",
-        version = "0.3.0",
+        version = PLUGIN_VERSION,
     },
     capabilities = {},
     resources = nil,

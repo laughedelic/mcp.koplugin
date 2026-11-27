@@ -30,7 +30,7 @@ local url = require("socket.url")
 local sha2 = require("ffi/sha2")
 local Device = require("device")
 
-local PLUGIN_VERSION = "0.3.0"
+local PLUGIN_VERSION = require("mcp_version")
 
 local MCPRelay = {
     -- Configuration
