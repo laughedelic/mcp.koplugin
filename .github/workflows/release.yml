@@ -1,0 +1,47 @@
+name: Release
+
+# Run from the Actions tab (or the API). It reads the version from _meta.lua,
+# tags the selected commit as v<version> and publishes a GitHub release.
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: Release notes in Markdown. Leave empty to generate them from merged PRs.
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the version from _meta.lua
+        id: version
+        run: |
+          version=$(sed -n 's/.*version = "\([0-9][0-9.]*\)".*/\1/p' _meta.lua)
+          [ -n "$version" ] || { echo "No version in _meta.lua" >&2; exit 1; }
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: Refuse to release an existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1 || git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG already exists; bump the version in _meta.lua first." >&2
+            exit 1
+          fi
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          if [ -n "$NOTES" ]; then
+            printf '%s\n' "$NOTES" > notes.md
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --generate-notes
+          fi
