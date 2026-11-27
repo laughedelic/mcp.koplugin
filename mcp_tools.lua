@@ -334,7 +334,7 @@ function MCPTools:list()
 end
 
 -- @param ctx table|nil: request context from the protocol layer
---        ({ modern, clientCapabilities, inputResponses, requestState })
+--        ({ modern, clientCapabilities, inputResponses, state (verified requestState) })
 function MCPTools:call(name, arguments, ctx)
     if not self.ui or not self.ui.document then
         return {
@@ -1032,6 +1032,19 @@ function MCPTools:annotate(args, ctx)
         }
     end
 
+    -- A retry answers a question about one passage of one book. If the
+    -- selection or book changed since, the answer doesn't apply here.
+    local passage = MRTR.digest({ doc.file or "", start_pos, end_pos })
+    if ctx and ctx.state and ctx.state.s == "existing_note"
+        and (type(ctx.state.x) ~= "table" or ctx.state.x.passage ~= passage) then
+        return {
+            content = {
+                { type = "text", text = "The passage changed since the user was asked, so nothing was changed. Call annotate again without the previous answer." },
+            },
+            isError = true,
+        }
+    end
+
     -- Check for duplicates using the annotation module's match function
     local annotations = self.ui.annotation.annotations or {}
     for i, existing in ipairs(annotations) do
@@ -1051,7 +1064,7 @@ function MCPTools:annotate(args, ctx)
         if matches then
             -- If a note is provided and different from existing, update it
             if note_text and note_text ~= "" and existing.note ~= note_text then
-                local decision, prompt_result = self:resolveExistingNote(existing, note_text, args, ctx)
+                local decision, prompt_result = self:resolveExistingNote(existing, note_text, args, ctx, passage)
                 if prompt_result then
                     return prompt_result
                 end
@@ -1141,7 +1154,25 @@ end
 -- 2026-07-28 multi round-trip request); otherwise asks the model to choose.
 -- @return decision ("replace", "append", "keep"), or nil and a tool result
 --         to return instead (a question for the user or the model)
-function MCPTools:resolveExistingNote(existing, note_text, args, ctx)
+-- Longest prefix of `s` of at most `max_bytes` that doesn't split a UTF-8 character
+local function utf8Prefix(s, max_bytes)
+    if #s <= max_bytes then
+        return s
+    end
+    local cut = max_bytes
+    -- Step back over continuation bytes (10xxxxxx) to a character boundary
+    while cut > 0 do
+        local next_byte = s:byte(cut + 1)
+        if not next_byte or next_byte < 0x80 or next_byte >= 0xC0 then
+            break
+        end
+        cut = cut - 1
+    end
+    return s:sub(1, cut)
+end
+MCPTools._utf8Prefix = utf8Prefix
+
+function MCPTools:resolveExistingNote(existing, note_text, args, ctx, passage)
     if not existing.note or existing.note == "" then
         return "replace"
     end
@@ -1156,24 +1187,27 @@ function MCPTools:resolveExistingNote(existing, note_text, args, ctx)
         ["Keep the existing note"] = "keep",
     }
 
-    if ctx and ctx.modern and MRTR.supportsFormElicitation(ctx.clientCapabilities) then
+    if ctx and ctx.modern and MRTR.supportsFormElicitation(ctx.clientCapabilities) and MRTR.available() then
         local digest = MRTR.callDigest("tools/call", "annotate", args)
-        if ctx.requestState then
-            local state = MRTR.decodeState(ctx.requestState, digest)
-            if state and state.s == "existing_note" then
-                local action, content = MRTR.getElicitResponse(ctx.inputResponses, "existing_note")
-                if action == "accept" and CHOICES[content.choice] then
-                    return CHOICES[content.choice]
-                elseif action == "decline" or action == "cancel" then
-                    return "keep"
-                end
-                -- No usable answer: ask again below
+        -- The question is about this note on this passage: bind the state to
+        -- both, so a changed note (or a replayed answer) asks again
+        local context = { passage = passage, note = MRTR.digest(existing.note) }
+        -- ctx.state was verified (signature, expiry, same call) by the protocol
+        local state = ctx.state
+        if state and state.s == "existing_note" and type(state.x) == "table"
+            and state.x.passage == context.passage and state.x.note == context.note then
+            local action, content = MRTR.getElicitResponse(ctx.inputResponses, "existing_note")
+            if action == "accept" and CHOICES[content.choice] then
+                return CHOICES[content.choice]
+            elseif action == "decline" or action == "cancel" then
+                return "keep"
             end
+            -- No usable answer: ask again below
         end
 
         local preview = existing.note
         if #preview > 200 then
-            preview = preview:sub(1, 200) .. "…"
+            preview = utf8Prefix(preview, 200) .. "…"
         end
         return nil, MRTR.elicitForm("existing_note",
             "This passage already has a note:\n\n" .. preview .. "\n\nWhat should happen to it?",
@@ -1189,7 +1223,7 @@ function MCPTools:resolveExistingNote(existing, note_text, args, ctx)
                 },
                 required = { "choice" },
             },
-            MRTR.encodeState("existing_note", digest))
+            MRTR.encodeState("existing_note", digest, context))
     end
 
     -- No way to ask the user directly: let the model ask and call again

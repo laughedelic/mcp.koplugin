@@ -164,7 +164,11 @@ function MCPProtocol:handleRequest(request)
     end
     params = params or {}
 
-    local headers = request.headers or {}
+    -- HTTP allows optional whitespace around header values
+    local headers = {}
+    for k, v in pairs(request.headers or {}) do
+        headers[k] = type(v) == "string" and v:match("^[ \t]*(.-)[ \t]*$") or v
+    end
     local header_version = headers["mcp-protocol-version"]
     local meta = type(params._meta) == "table" and params._meta or {}
 
@@ -308,6 +312,13 @@ function MCPProtocol:handleModernMessage(jsonRequest, method, id, params, meta, 
         return self:createErrorResponse(id, INVALID_PARAMS,
             "Invalid params: _meta is missing " .. META_PROTOCOL_VERSION, 400)
     end
+    -- A header that disagrees with the body is a mismatch, whatever the version
+    local header_version = headers["mcp-protocol-version"]
+    if header_version ~= nil and header_version ~= version then
+        return self:createErrorResponse(id, HEADER_MISMATCH,
+            "Header mismatch: MCP-Protocol-Version header value '" .. header_version
+            .. "' does not match body value '" .. version .. "'", 400)
+    end
     if not contains(MODERN_VERSIONS, version) then
         return self:createErrorResponse(id, UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version", 400,
             { supported = ALL_VERSIONS, requested = version })
@@ -331,9 +342,24 @@ function MCPProtocol:handleModernMessage(jsonRequest, method, id, params, meta, 
     local ctx = {
         modern = true,
         clientCapabilities = meta[META_CLIENT_CAPABILITIES],
-        inputResponses = params.inputResponses,
-        requestState = params.requestState,
+        inputResponses = type(params.inputResponses) == "table" and params.inputResponses or nil,
     }
+
+    -- A retry's requestState must be one we issued for this exact call, and
+    -- still valid; anything else is rejected before the tool runs
+    if params.requestState ~= nil and params.requestState ~= rapidjson.null then
+        if method ~= "tools/call" then
+            return self:createErrorResponse(id, INVALID_PARAMS, "Invalid params: unexpected requestState", 400)
+        end
+        local arguments = params.arguments
+        if arguments == rapidjson.null then arguments = nil end
+        local state, state_err = MRTR.decodeState(params.requestState,
+            MRTR.callDigest("tools/call", params.name, arguments))
+        if not state then
+            return self:createErrorResponse(id, INVALID_PARAMS, "Invalid params: " .. state_err, 400)
+        end
+        ctx.state = state
+    end
 
     local result, err, cache
     if method == "server/discover" then
@@ -414,7 +440,7 @@ end
 --------------------------------------------------------------------------------
 
 -- Run a server method.
--- @param ctx table: { modern, clientCapabilities, inputResponses, requestState }
+-- @param ctx table: { modern, clientCapabilities, inputResponses, state (verified requestState) }
 -- @return result, error ({code, message}), cache hint; or nothing if the
 --         method is unknown
 -- resource_link content was added in 2025-06-18; older clients reject it,
@@ -446,7 +472,12 @@ function MCPProtocol:dispatch(method, params, ctx)
         if not params.name then
             return nil, { code = INVALID_PARAMS, message = "Invalid params: missing name" }
         end
-        local arguments = type(params.arguments) == "table" and params.arguments or {}
+        local arguments = params.arguments
+        if arguments == rapidjson.null then arguments = nil end
+        if arguments ~= nil and type(arguments) ~= "table" then
+            return nil, { code = INVALID_PARAMS, message = "Invalid params: arguments must be an object" }
+        end
+        arguments = arguments or {}
         local ok, result = pcall(function()
             return self.tools:call(params.name, arguments, ctx)
         end)
@@ -500,7 +531,12 @@ function MCPProtocol:dispatch(method, params, ctx)
         if not params.name then
             return nil, { code = INVALID_PARAMS, message = "Invalid params: missing name" }
         end
-        local arguments = type(params.arguments) == "table" and params.arguments or {}
+        local arguments = params.arguments
+        if arguments == rapidjson.null then arguments = nil end
+        if arguments ~= nil and type(arguments) ~= "table" then
+            return nil, { code = INVALID_PARAMS, message = "Invalid params: arguments must be an object" }
+        end
+        arguments = arguments or {}
         local ok, result, prompt_err = pcall(function()
             return self.prompts:get(params.name, arguments)
         end)

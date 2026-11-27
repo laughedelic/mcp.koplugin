@@ -97,17 +97,24 @@ end
 -- (the client then just gets asked again)
 local signing_key
 
+-- Raises an error without a secure random source: a guessable key would let
+-- clients forge states, so elicitation is simply unavailable then
 local function getSigningKey()
     if not signing_key then
         local f = io and io.open and io.open("/dev/urandom", "rb")
         local bytes = f and f:read(32)
         if f then f:close() end
         if not bytes or #bytes < 32 then
-            bytes = tostring(os.time()) .. tostring(os.clock()) .. tostring({})
+            error("secure random source (/dev/urandom) is not available", 0)
         end
         signing_key = sha2.sha256(bytes)
     end
     return signing_key
+end
+
+-- Whether request states can be signed (a secure key is available)
+function MRTR.available()
+    return (pcall(getSigningKey))
 end
 
 local function sign(payload)
@@ -116,19 +123,60 @@ local function sign(payload)
     return sha2.sha256(key .. "\n" .. payload .. "\n" .. key)
 end
 
+-- Canonical JSON: escaped strings, sorted object keys. Unambiguous, so two
+-- different values never serialize the same way.
+local function canonicalString(s)
+    return '"' .. s:gsub('[%c"\\]', function(c)
+        return string.format("\\u%04x", c:byte())
+    end) .. '"'
+end
+
+function MRTR.canonicalJSON(value)
+    local t = type(value)
+    if value == nil or value == rapidjson.null then
+        return "null"
+    elseif t == "string" then
+        return canonicalString(value)
+    elseif t == "number" then
+        if value == math.floor(value) and math.abs(value) < 2^53 then
+            return string.format("%d", value)
+        end
+        return string.format("%.17g", value)
+    elseif t == "boolean" then
+        return tostring(value)
+    elseif t == "table" then
+        local n, count = #value, 0
+        for _ in pairs(value) do count = count + 1 end
+        local parts = {}
+        if count > 0 and count == n then
+            for i = 1, n do
+                parts[i] = MRTR.canonicalJSON(value[i])
+            end
+            return "[" .. table.concat(parts, ",") .. "]"
+        end
+        local keys = {}
+        for k in pairs(value) do
+            keys[#keys + 1] = tostring(k)
+        end
+        table.sort(keys)
+        for i, k in ipairs(keys) do
+            local v = value[k]
+            if v == nil then v = value[tonumber(k)] end
+            parts[i] = canonicalString(k) .. ":" .. MRTR.canonicalJSON(v)
+        end
+        return "{" .. table.concat(parts, ",") .. "}"
+    end
+    error("cannot encode " .. t)
+end
+
 -- Stable digest of a tool call, so a state is only accepted on the same call
 function MRTR.callDigest(method, name, arguments)
-    local keys = {}
-    for k in pairs(arguments or {}) do
-        keys[#keys + 1] = tostring(k)
-    end
-    table.sort(keys)
-    local parts = { method or "", name or "" }
-    for _, k in ipairs(keys) do
-        local v = arguments[k]
-        parts[#parts + 1] = k .. "=" .. (type(v) == "table" and rapidjson.encode(v) or tostring(v))
-    end
-    return sha2.sha256(table.concat(parts, "\0"))
+    return sha2.sha256(MRTR.canonicalJSON({ method or "", name or "", arguments or {} }))
+end
+
+-- Digest of any value (e.g. the context a question was asked about)
+function MRTR.digest(value)
+    return sha2.sha256(MRTR.canonicalJSON(value))
 end
 
 -- @param step string: which question this state belongs to
@@ -150,7 +198,8 @@ function MRTR.decodeState(state, digest)
         return nil, "missing request state"
     end
     local payload, signature = state:match("^([%w+/=]+)%.(%x+)$")
-    if not payload or signature ~= sign(payload) then
+    local ok_sign, expected = pcall(sign, payload or "")
+    if not payload or not ok_sign or signature ~= expected then
         return nil, "invalid request state"
     end
     local ok, decoded = pcall(rapidjson.decode, MRTR.base64Decode(payload) or "")
