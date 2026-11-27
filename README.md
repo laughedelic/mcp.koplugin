@@ -51,6 +51,16 @@ Use the [App Store plugin](https://github.com/omer-faruq/appstore.koplugin) (or 
 
 To update, repeat the steps above with the latest version.
 
+### Over Wi-Fi (for testing a branch)
+
+Turn on KOReader's SSH server (**⚙️ Settings → Network → SSH server**, port 2222) and add your public key to `koreader/settings/SSH/authorized_keys`. Then, from a checkout of the branch you want:
+
+```sh
+scripts/push-to-device.sh <reader-ip>
+```
+
+It finds KOReader's folder on Kobo, Kindle, Android and PocketBook, or takes the folder as a second argument. Restart KOReader afterwards (**Menu → Exit → Restart KOReader**).
+
 ## Usage
 
 ### Starting the Server
