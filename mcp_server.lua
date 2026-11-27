@@ -148,7 +148,14 @@ function MCPServer:pollOnce()
         body = ""
     }
 
-    if self.onRequest then
+    local origin = request.headers["origin"]
+    local rejection = self:checkRequest(request)
+    if rejection then
+        response = rejection
+    elseif request.method == "OPTIONS" then
+        -- CORS preflight from a browser-based MCP client on an allowed origin
+        response = { status = 204, statusText = "No Content", headers = {}, body = "" }
+    elseif self.onRequest then
         local ok, result = pcall(self.onRequest, request)
         if ok and result then
             response = result
@@ -160,9 +167,66 @@ function MCPServer:pollOnce()
         end
     end
 
+    -- Browser-based clients (e.g. MCP Inspector) need CORS headers
+    if origin and not rejection then
+        response.headers = response.headers or {}
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] =
+            "Content-Type, Accept, Authorization, MCP-Protocol-Version, Mcp-Method, Mcp-Name, Mcp-Session-Id, Last-Event-ID"
+        response.headers["Vary"] = "Origin"
+    end
+
     -- Send response
     self:sendResponse(client, response)
     client:close()
+end
+
+-- Hosts that may appear in an Origin header. Anything else is a web page on
+-- another site trying to reach this server through the user's browser
+-- (DNS rebinding), which the MCP spec requires servers to reject.
+function MCPServer:isAllowedOrigin(origin)
+    if origin == "null" then
+        return false
+    end
+    local host = origin:match("^%a[%w+.-]*://%[([^%]]+)%]") -- [IPv6]
+        or origin:match("^%a[%w+.-]*://([^/:]+)")
+    if not host then
+        return false
+    end
+    host = host:lower()
+    if host == "localhost" or host == "127.0.0.1" or host == "::1" then
+        return true
+    end
+    local local_ip = self:getLocalIP()
+    return local_ip ~= nil and host == local_ip
+end
+
+-- Transport-level validation shared by all requests.
+-- @return an error response, or nil if the request may proceed
+function MCPServer:checkRequest(request)
+    local origin = request.headers["origin"]
+    if origin and not self:isAllowedOrigin(origin) then
+        logger.warn("MCP: Rejected request from origin", origin)
+        return {
+            status = 403,
+            statusText = "Forbidden",
+            headers = {},
+            body = '{"jsonrpc":"2.0","error":{"code":-32600,"message":"Origin not allowed"}}',
+        }
+    end
+
+    -- The MCP endpoint is /mcp; / is accepted too for URLs configured without a path
+    if request.path ~= "/mcp" and request.path ~= "/mcp/" and request.path ~= "/" then
+        return {
+            status = 404,
+            statusText = "Not Found",
+            headers = {},
+            body = '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Not found: the MCP endpoint is /mcp"}}',
+        }
+    end
+
+    return nil
 end
 
 function MCPServer:parseRequest(client)
@@ -231,8 +295,11 @@ function MCPServer:sendResponse(client, response)
     local resp = "HTTP/1.1 " .. status .. " " .. statusText .. "\r\n"
 
     -- Add default headers
+    local body = response.body or ""
     resp = resp .. "Connection: close\r\n"
-    resp = resp .. "Content-Type: application/json\r\n"
+    if #body > 0 and not (response.headers and response.headers["Content-Type"]) then
+        resp = resp .. "Content-Type: application/json\r\n"
+    end
 
     -- Add custom headers
     for key, value in pairs(response.headers or {}) do
@@ -240,7 +307,6 @@ function MCPServer:sendResponse(client, response)
     end
 
     -- Add body
-    local body = response.body or ""
     resp = resp .. "Content-Length: " .. #body .. "\r\n"
     resp = resp .. "\r\n"
     resp = resp .. body

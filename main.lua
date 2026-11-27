@@ -124,6 +124,38 @@ function MCP:init()
             shared_state.relay:setPasscode(saved_passcode)
         end
 
+        -- Restore the device secret that authenticates polling
+        local saved_device_secret = G_reader_settings:readSetting("mcp_relay_device_secret")
+        if saved_device_secret then
+            shared_state.relay:setDeviceSecret(saved_device_secret)
+        end
+        shared_state.relay.onDeviceSecret = function(secret)
+            G_reader_settings:saveSetting("mcp_relay_device_secret", secret)
+            G_reader_settings:flush()
+        end
+        shared_state.relay.tls_verify = G_reader_settings:nilOrTrue("mcp_relay_tls_verify")
+        shared_state.relay.onFatalError = function(message)
+            -- The relay client has stopped retrying, so stop the server too:
+            -- status and menus then say "stopped" instead of "connecting".
+            -- Deferred, because this can fire from inside relay:start().
+            UIManager:nextTick(function()
+                MCP:stopServer()
+                MCP:refreshSettingsMenu(shared_state.settings_menu_instance)
+            end)
+            UIManager:show(InfoMessage:new {
+                text = T(_("The cloud relay connection stopped:\n%1\n\nIf the relay rejected the credentials, reset the device ID in the MCP server settings (Settings → Network → MCP server) to register again."), message),
+            })
+        end
+        shared_state.relay.onWarning = function(message)
+            -- Each distinct warning once per run: every reconnect would repeat it
+            shared_state.relay_warnings_shown = shared_state.relay_warnings_shown or {}
+            if shared_state.relay_warnings_shown[message] then
+                return
+            end
+            shared_state.relay_warnings_shown[message] = true
+            UIManager:show(InfoMessage:new { text = message })
+        end
+
         -- Set up relay callbacks
         shared_state.relay:setStatusCallback(function(connected, url)
             shared_state.relay_connected = connected
@@ -545,9 +577,12 @@ function MCP:buildSettingsMenu(existing_items)
                         G_reader_settings:delSetting("mcp_relay_device_id")
                         G_reader_settings:delSetting("mcp_relay_passcode")
                         G_reader_settings:delSetting("mcp_relay_passcode_hash")
+                        G_reader_settings:delSetting("mcp_relay_device_secret")
                         shared_state.relay:setDeviceId(nil)
                         shared_state.relay:setPasscode(nil)
                         shared_state.relay:setPasscodeHash(nil)
+                        shared_state.relay:setDeviceSecret(nil)
+                        shared_state.relay_warnings_shown = nil
                         -- Restart server if running in remote mode
                         if shared_state.relay_running then
                             mcp_self:stopServer()
@@ -872,6 +907,14 @@ function MCP:startRelay(show_notification)
     shared_state.protocol:setSendCallback(sendToClient)
 
     local success, device_id = shared_state.relay:start()
+    if success and shared_state.relay.halted then
+        -- Stopped during start (onFatalError already told the user why).
+        -- The shared flags were never set, so stop the relay client here;
+        -- otherwise the next start would find it "already running".
+        shared_state.relay:stop()
+        shared_state.protocol:setSendCallback(nil)
+        return false
+    end
     if success then
         shared_state.server_running = true
         shared_state.relay_running = true

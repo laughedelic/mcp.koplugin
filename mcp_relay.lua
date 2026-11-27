@@ -30,6 +30,8 @@ local url = require("socket.url")
 local sha2 = require("ffi/sha2")
 local Device = require("device")
 
+local PLUGIN_VERSION = "0.3.0"
+
 local MCPRelay = {
     -- Configuration
     relay_url = "https://mcp-relay.laughedelic.workers.dev", -- Default relay URL
@@ -40,6 +42,7 @@ local MCPRelay = {
     -- OAuth credentials (device-generated)
     passcode = nil,       -- 6-digit passcode (generated locally, shown to user)
     passcode_hash = nil,  -- SHA-256 hash of passcode (sent to relay for storage)
+    device_secret = nil,  -- random secret that authenticates polling (sent once at registration)
     token_endpoint = nil, -- OAuth token endpoint URL
 
     -- State
@@ -61,6 +64,17 @@ local MCPRelay = {
     onRequest = nil,           -- function(request) -> response
     onStatusChange = nil,      -- function(connected, public_url)
     onFirstRegistration = nil, -- function(device_id, passcode, public_url) - called only on first registration with new passcode
+    onDeviceSecret = nil,      -- function(secret) - called when a new device secret is generated, to persist it
+    onFatalError = nil,        -- function(message) - the relay client stopped retrying (rejected credentials, no secure randomness, insecure URL)
+    onWarning = nil,           -- function(message) - something the user should know, but the connection still works
+
+    -- TLS: verify the relay's certificate chain and host name (setting
+    -- mcp_relay_tls_verify = false turns this off, e.g. for a self-signed
+    -- development relay)
+    tls_verify = true,
+
+    -- Set when retrying can't help until the credentials or settings change
+    halted = nil,
 
     -- Timing (tuned for battery/responsiveness balance)
     poll_interval_min = 0.5,    -- minimum seconds between polls (when active)
@@ -82,24 +96,75 @@ end
 
 -- Generate a device ID using the device type + 4-char suffix
 -- Example: "Kobo-a7b2" or "Kindle-px9c"
+-- Read n cryptographically secure random bytes from /dev/urandom (available
+-- on every KOReader platform: Kindle, Kobo, PocketBook, Android, desktop).
+-- Raises an error if it can't be read, so credentials are never made from
+-- guessable values. Only `allow_weak` callers (the device ID, which is not
+-- a secret) fall back to a hash of time and memory state.
+function MCPRelay:randomBytes(n, allow_weak)
+    local f = io.open("/dev/urandom", "rb")
+    if f then
+        local bytes = f:read(n)
+        f:close()
+        if bytes and #bytes == n then
+            return bytes
+        end
+    end
+    if not allow_weak then
+        error("secure random source (/dev/urandom) is not available", 0)
+    end
+    logger.warn("MCP Relay: /dev/urandom unavailable, using weak randomness for a non-secret value")
+    local out = {}
+    local seed = tostring(os.time()) .. tostring(os.clock()) .. tostring({}) .. tostring(socket.gettime())
+    while #table.concat(out) < n do
+        seed = sha2.sha256(seed .. #out)
+        table.insert(out, (seed:gsub("..", function(h) return string.char(tonumber(h, 16)) end)))
+    end
+    return table.concat(out):sub(1, n)
+end
+
+-- Random integer in [0, max) without modulo bias
+function MCPRelay:randomInt(max, allow_weak)
+    while true do
+        local b = self:randomBytes(4, allow_weak)
+        local v = ((b:byte(1) * 256 + b:byte(2)) * 256 + b:byte(3)) * 256 + b:byte(4)
+        local limit = 4294967296 - (4294967296 % max)
+        if v < limit then
+            return v % max
+        end
+    end
+end
+
+-- Random string of `len` characters drawn from `alphabet`
+function MCPRelay:randomString(len, alphabet, allow_weak)
+    local out = {}
+    for i = 1, len do
+        local idx = self:randomInt(#alphabet, allow_weak) + 1
+        out[i] = alphabet:sub(idx, idx)
+    end
+    return table.concat(out)
+end
+
 function MCPRelay:generateDeviceId()
     local device_model = self:getDeviceTypeLabel()
 
-    -- Clean up the model name: remove spaces, special characters
-    local clean_model = device_model:gsub("[^%w%-_]", "")
-
-    -- Use os.time() with milliseconds from os.clock() for randomness
-    math.randomseed(os.time() + math.floor(os.clock() * 1000))
-
-    -- Generate 4-character suffix for uniqueness
-    local chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-    local suffix = ""
-    for _ = 1, 4 do
-        local idx = math.random(1, #chars)
-        suffix = suffix .. chars:sub(idx, idx)
+    -- Clean up the model name: keep letters and digits only (the relay accepts
+    -- [a-z0-9-], 6-24 chars), and keep it short enough for the suffix to fit
+    local clean_model = device_model:gsub("[^%w]", ""):sub(1, 15)
+    if clean_model == "" then
+        clean_model = "koreader"
     end
 
+    -- 8-character random suffix (36^8 ~ 2.8e12) so IDs can't be enumerated.
+    -- The device ID is not a secret, but it shouldn't be guessable either.
+    local suffix = self:randomString(8, "abcdefghijklmnopqrstuvwxyz0123456789", true)
+
     return (clean_model .. "-" .. suffix):lower()
+end
+
+-- Generate a random device secret (64 hex chars = 256 bits)
+function MCPRelay:generateDeviceSecret()
+    return (self:randomBytes(32):gsub(".", function(c) return string.format("%02x", c:byte()) end))
 end
 
 -- Get a generalized device type label (Kindle, Kobo, etc.) when possible
@@ -131,15 +196,7 @@ end
 
 -- Generate a random 6-digit numeric passcode
 function MCPRelay:generatePasscode()
-    -- Use os.time() with milliseconds from os.clock() for randomness
-    math.randomseed(os.time() + math.floor(os.clock() * 1000))
-
-    local passcode = ""
-    for _ = 1, 6 do
-        passcode = passcode .. tostring(math.random(0, 9))
-    end
-
-    return passcode
+    return self:randomString(6, "0123456789")
 end
 
 -- Hash a passcode using SHA-256 (returns hex string)
@@ -160,10 +217,14 @@ end
 -- Set the relay server URL
 function MCPRelay:setRelayUrl(relay_url)
     self.relay_url = relay_url
+    self.halted = nil
 end
 
 -- Set the device ID (for reconnection with same ID)
 function MCPRelay:setDeviceId(device_id)
+    if device_id ~= self.device_id then
+        self.halted = nil
+    end
     if device_id then
         self.device_id = tostring(device_id):lower()
     else
@@ -187,6 +248,186 @@ end
 -- Set the passcode hash directly (for restoring from saved settings)
 function MCPRelay:setPasscodeHash(hash)
     self.passcode_hash = hash
+end
+
+-- Set the device secret (restored from saved settings)
+function MCPRelay:setDeviceSecret(secret)
+    if secret ~= self.device_secret then
+        self.halted = nil
+    end
+    self.device_secret = secret
+end
+
+-- Stop retrying until credentials or settings change, and tell the user
+function MCPRelay:halt(message)
+    logger.err("MCP Relay: Stopped retrying -", message)
+    self.halted = message
+    if self.onFatalError then
+        self.onFatalError(message)
+    end
+end
+
+-- Whether a relay URL is safe to send device credentials to: HTTPS, or
+-- plain HTTP only to this machine (a local development relay)
+function MCPRelay:isSecureRelayUrl(relay_url)
+    local parsed = url.parse(relay_url or "")
+    if parsed.scheme == "https" then
+        return parsed.host ~= nil
+    end
+    if parsed.scheme == "http" then
+        local host = (parsed.host or ""):lower()
+        return host == "localhost" or host == "127.0.0.1" or host == "::1"
+    end
+    return false
+end
+
+-- Locate a CA certificate bundle for TLS verification. KOReader ships
+-- data/ca-bundle.crt (relative to its install directory, which is the working
+-- directory); system stores are fallbacks.
+-- @return cafile, capath (either may be nil)
+local CA_FILES = {
+    "data/ca-bundle.crt",
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/cert.pem",
+}
+local CA_PATHS = {
+    "/system/etc/security/cacerts", -- Android
+    "/etc/ssl/certs",
+}
+function MCPRelay:findCACertificates()
+    if self._ca_cache then
+        return self._ca_cache.file, self._ca_cache.path
+    end
+    local cafile, capath
+    for _, path in ipairs(CA_FILES) do
+        local f = io.open(path, "r")
+        if f then
+            f:close()
+            cafile = path
+            break
+        end
+    end
+    if not cafile then
+        local ok, lfs = pcall(require, "libs/libkoreader-lfs")
+        if not ok then ok, lfs = pcall(require, "lfs") end
+        for _, path in ipairs(CA_PATHS) do
+            if ok and lfs and lfs.attributes(path, "mode") == "directory" then
+                capath = path
+                break
+            end
+        end
+    end
+    self._ca_cache = { file = cafile, path = capath }
+    return cafile, capath
+end
+
+-- Whether a host is an IPv4 or IPv6 literal
+local function isIpLiteral(host)
+    return host:match("^%d+%.%d+%.%d+%.%d+$") ~= nil or host:find(":") ~= nil
+end
+
+-- Canonical form of an IP address (IPv6 fully expanded, lowercase), so that
+-- equivalent spellings compare equal. Returns nil for invalid input.
+local function normalizeIp(address)
+    if type(address) ~= "string" then return nil end
+    address = address:lower()
+    if not address:find(":") then
+        local a, b, c, d = address:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+        if not a then return nil end
+        local parts = { tonumber(a), tonumber(b), tonumber(c), tonumber(d) }
+        for _, n in ipairs(parts) do
+            if n > 255 then return nil end
+        end
+        return table.concat(parts, ".")
+    end
+    -- An embedded IPv4 tail (e.g. ::ffff:1.2.3.4) becomes two hex groups
+    local head, v4 = address:match("^(.*:)(%d+%.%d+%.%d+%.%d+)$")
+    if head then
+        local four = normalizeIp(v4)
+        if not four then return nil end
+        local a, b, c, d = four:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+        address = head .. string.format("%x:%x", tonumber(a) * 256 + tonumber(b), tonumber(c) * 256 + tonumber(d))
+    end
+    local left, right = address:match("^(.-)::(.*)$")
+    local groups = {}
+    local function split(s, out)
+        if s == "" then return true end
+        for g in (s .. ":"):gmatch("([^:]*):") do
+            if not g:match("^%x%x?%x?%x?$") then return false end
+            out[#out + 1] = string.format("%04x", tonumber(g, 16))
+        end
+        return true
+    end
+    if left then
+        local l, r = {}, {}
+        if not split(left, l) or not split(right, r) or #l + #r > 7 then return nil end
+        for _, g in ipairs(l) do groups[#groups + 1] = g end
+        for _ = 1, 8 - #l - #r do groups[#groups + 1] = "0000" end
+        for _, g in ipairs(r) do groups[#groups + 1] = g end
+    else
+        if not split(address, groups) or #groups ~= 8 then return nil end
+    end
+    return table.concat(groups, ":")
+end
+MCPRelay._normalizeIp = normalizeIp
+
+-- RFC 6125 host name match, with a single left-most wildcard label
+local function hostMatches(pattern, host)
+    if type(pattern) ~= "string" then return false end
+    pattern = pattern:lower()
+    host = host:lower()
+    if pattern == host then
+        return true
+    end
+    local suffix = pattern:match("^%*%.(.+)$")
+    if suffix and suffix:find("%.") then
+        local rest = host:match("^[^.]+%.(.+)$")
+        return rest == suffix
+    end
+    return false
+end
+
+-- Whether a LuaSec peer certificate is valid for `host` (subjectAltName
+-- dNSName entries, or the subject CN when there are none)
+function MCPRelay.certificateMatchesHost(cert, host)
+    if not cert or not host then return false end
+    local ok, extensions = pcall(cert.extensions, cert)
+    local san = ok and type(extensions) == "table" and extensions["2.5.29.17"]
+    -- An IP address only matches an iPAddress SAN (never DNS names or the CN)
+    local bare_host = host:gsub("^%[(.*)%]$", "%1")
+    if isIpLiteral(bare_host) then
+        if type(san) == "table" and type(san.iPAddress) == "table" then
+            local wanted = normalizeIp(bare_host)
+            for _, address in ipairs(san.iPAddress) do
+                if wanted and normalizeIp(address) == wanted then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+    if type(san) == "table" and type(san.dNSName) == "table" and #san.dNSName > 0 then
+        for _, name in ipairs(san.dNSName) do
+            if hostMatches(name, host) then
+                return true
+            end
+        end
+        return false
+    end
+    local ok_subject, subject = pcall(cert.subject, cert)
+    if ok_subject and type(subject) == "table" then
+        for _, entry in ipairs(subject) do
+            if (entry.name == "commonName" or entry.oid == "2.5.4.3") and hostMatches(entry.value, host) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function MCPRelay:getDeviceSecret()
+    return self.device_secret
 end
 
 -- Get the passcode (only available during this session after generation)
@@ -265,7 +506,7 @@ end
 function MCPRelay:buildHttpRequest(method, parsed_url, body, extra_headers)
     local headers = {
         ["Host"] = parsed_url.host,
-        ["User-Agent"] = "KOReader-MCP-Plugin/1.0",
+        ["User-Agent"] = "KOReader-MCP-Plugin/" .. PLUGIN_VERSION,
         ["Accept"] = "application/json",
         ["Connection"] = "close",
     }
@@ -431,14 +672,36 @@ function MCPRelay:httpRequestAsync(request_url, method, body, callback, extra_he
                 if is_https then
                     state.phase = "handshake"
                     -- Wrap socket with SSL
-                    local ssl_params = {
-                        mode = "client",
-                        protocol = "any",
-                        verify = "none", -- TODO: proper cert verification
-                        options = { "all", "no_sslv3" },
-                    }
+                    -- Build the TLS context (and load the CA bundle) once,
+                    -- not on every poll
+                    local verify = self.tls_verify and true or false
+                    if not self._ssl_ctx or self._ssl_ctx_verify ~= verify then
+                        local ssl_params = {
+                            mode = "client",
+                            protocol = "any",
+                            options = { "all", "no_sslv3" },
+                        }
+                        if verify then
+                            local cafile, capath = self:findCACertificates()
+                            if not cafile and not capath then
+                                on_error("TLS: no CA certificate bundle found to verify the relay")
+                                return
+                            end
+                            ssl_params.verify = { "peer", "fail_if_no_peer_cert" }
+                            ssl_params.cafile = cafile
+                            ssl_params.capath = capath
+                        else
+                            ssl_params.verify = "none"
+                        end
+                        local ctx, ctx_err = ssl.newcontext(ssl_params)
+                        if not ctx then
+                            on_error("SSL wrap failed: " .. tostring(ctx_err))
+                            return
+                        end
+                        self._ssl_ctx, self._ssl_ctx_verify = ctx, verify
+                    end
 
-                    local ssl_sock, wrap_err = ssl.wrap(state.sock, ssl_params)
+                    local ssl_sock, wrap_err = ssl.wrap(state.sock, self._ssl_ctx)
                     if not ssl_sock then
                         on_error("SSL wrap failed: " .. tostring(wrap_err))
                         return
@@ -459,11 +722,21 @@ function MCPRelay:httpRequestAsync(request_url, method, body, callback, extra_he
             -- Continue SSL handshake
             local ok, err = state.ssl_sock:dohandshake()
             if ok then
+                -- The chain was verified during the handshake; LuaSec doesn't
+                -- check the host name, so do it here before sending anything
+                if self.tls_verify and not MCPRelay.certificateMatchesHost(state.ssl_sock:getpeercertificate(), parsed.host) then
+                    on_error("TLS: the relay's certificate is not valid for " .. tostring(parsed.host))
+                    return
+                end
                 state.phase = "sending"
             elseif err == "wantread" or err == "wantwrite" or err == "timeout" then
                 -- Handshake in progress, continue polling
             else
-                on_error("SSL handshake failed: " .. tostring(err))
+                local hint = ""
+                if tostring(err):find("certificate") then
+                    hint = " (check that the device's date and time are correct)"
+                end
+                on_error("SSL handshake failed: " .. tostring(err) .. hint)
                 return
             end
         end
@@ -539,9 +812,13 @@ function MCPRelay:getDeviceHeaders()
     if not self.device_id then
         return {}
     end
-    return {
+    local headers = {
         ["X-Device-Id"] = self.device_id,
     }
+    if self.device_secret then
+        headers["Authorization"] = "Device " .. self.device_secret
+    end
+    return headers
 end
 
 -- Register with the relay server
@@ -554,20 +831,62 @@ function MCPRelay:register(callback)
         return
     end
 
+    if self.halted then
+        logger.warn("MCP Relay: Not registering:", self.halted)
+        if callback then
+            callback(false, self.halted)
+        end
+        return
+    end
+
+    -- Device credentials only ever go over HTTPS
+    if not self:isSecureRelayUrl(self.relay_url) then
+        self:halt("The relay URL must use https:// (" .. tostring(self.relay_url) .. ")")
+        if callback then
+            callback(false, self.halted)
+        end
+        return
+    end
+
     -- Check if this is a first registration (no credentials yet)
-    local is_first_registration = not self.device_id or not self.passcode_hash
+    -- (or credentials generated earlier whose registration never succeeded,
+    -- e.g. a TLS failure, so the passcode still gets saved and shown)
+    local is_first_registration = self.first_registration_pending
+        or not self.device_id or not self.passcode_hash
 
-    if is_first_registration then
-        -- Generate new credentials locally (keep existing device_id if pre-generated)
-        local device_id = self.device_id or self:generateDeviceId()
-        device_id = tostring(device_id):lower()
-        local passcode = self:generatePasscode()
-        local passcode_hash = self:hashPasscode(passcode)
-        self.device_id = device_id
-        self.passcode = passcode -- Save for display to user
-        self.passcode_hash = passcode_hash
+    -- Credentials come only from a secure random source; without one, stop
+    -- rather than register guessable credentials
+    local ok_credentials, credentials_err = pcall(function()
+        if is_first_registration then
+            -- Generate new credentials locally (keep existing device_id if pre-generated)
+            local device_id = self.device_id or self:generateDeviceId()
+            device_id = tostring(device_id):lower()
+            local passcode = self:generatePasscode()
+            local passcode_hash = self:hashPasscode(passcode)
+            self.device_id = device_id
+            self.passcode = passcode -- Save for display to user
+            self.passcode_hash = passcode_hash
+            self.first_registration_pending = true
 
-        logger.info("MCP Relay: Generated new credentials for device:", self.device_id)
+            logger.info("MCP Relay: Generated new credentials for device:", self.device_id)
+        end
+
+        -- Every device gets a secret that authenticates its polling. Devices
+        -- registered before secrets existed get one now; the relay accepts it
+        -- once, together with the matching passcode hash.
+        if not self.device_secret then
+            self.device_secret = self:generateDeviceSecret()
+            if self.onDeviceSecret then
+                self.onDeviceSecret(self.device_secret)
+            end
+        end
+    end)
+    if not ok_credentials then
+        self:halt("Could not create secure credentials: " .. tostring(credentials_err))
+        if callback then
+            callback(false, self.halted)
+        end
+        return
     end
 
     local register_url = self.relay_url .. "/register"
@@ -576,7 +895,8 @@ function MCPRelay:register(callback)
         deviceId = self.device_id,
         deviceName = self.device_name,
         passcodeHash = self.passcode_hash, -- Always send hash for verification
-        version = "2.0.0",
+        deviceSecret = self.device_secret,
+        version = PLUGIN_VERSION,
     }
 
     local payload = json.encode(payload_data)
@@ -595,8 +915,30 @@ function MCPRelay:register(callback)
             return
         end
 
+        if response and response.code == 401 then
+            local ok_err, err_data = pcall(json.decode, response.body or "")
+            local message = ok_err and type(err_data) == "table" and err_data.error or "Credentials rejected"
+            -- Retrying with the same credentials can't succeed
+            self:halt("The relay rejected this device's credentials: " .. tostring(message))
+            if callback then
+                callback(false, self.halted)
+            end
+            return
+        end
+
         if not response or response.code ~= 200 then
-            local error_msg = response and response.code or "Connection failed"
+            local error_msg = response and (response.code or response.error) or "Connection failed"
+            -- Certificate problems won't fix themselves on retry the way a
+            -- dropped connection does, so tell the user (once) what's wrong
+            local transport_error = response and response.error and tostring(response.error)
+            -- Only verification failures: a handshake cut short ("closed") is
+            -- an ordinary network hiccup and just retries
+            local is_verification_error = transport_error and (transport_error:find("^TLS:")
+                or transport_error:find("^SSL wrap failed")
+                or (transport_error:find("^SSL handshake failed") and transport_error:find("certificate")))
+            if is_verification_error and self.onWarning then
+                self.onWarning("Can't connect securely to the relay:\n" .. transport_error)
+            end
             logger.err("MCP Relay: Registration failed after", string.format("%.2fs", elapsed), "-", error_msg)
             if callback then
                 callback(false, "Registration failed: " .. tostring(error_msg))
@@ -614,6 +956,15 @@ function MCPRelay:register(callback)
             return
         end
 
+        -- A relay that predates device secrets ignores ours and keeps
+        -- polling protected by the device ID alone
+        if data.deviceSecretRegistered ~= true then
+            logger.warn("MCP Relay: Relay did not confirm the device secret; polling is not authenticated")
+            if self.onWarning then
+                self.onWarning("This relay doesn't support device secrets yet, so the connection is less protected. Update the relay to the latest version.")
+            end
+        end
+
         -- Save the public URL and token endpoint
         self.public_url = data.relayUrl or (self.relay_url .. "/mcp")
         self.token_endpoint = data.tokenEndpoint or (self.relay_url .. "/oauth/token")
@@ -625,6 +976,9 @@ function MCPRelay:register(callback)
 
         -- On first registration, call callback to show passcode to user
         -- (passcode was generated locally, so we have it available)
+        if is_first_registration then
+            self.first_registration_pending = nil
+        end
         if is_first_registration and self.passcode then
             logger.info("MCP Relay: First registration complete, showing credentials to user")
 
@@ -692,6 +1046,13 @@ function MCPRelay:pollForRequests()
             self.consecutive_empty_polls = self.consecutive_empty_polls + 1
             logger.dbg("MCP Relay: Poll returned 204 (no requests) in", string.format("%.2fs", poll_elapsed))
             self:scheduleNextPoll()
+            return
+        end
+
+        if status == 401 then
+            -- Device secret rejected: re-registering will tell us more
+            logger.warn("MCP Relay: Poll rejected (401) - re-registering")
+            self:handleDisconnect()
             return
         end
 
@@ -974,6 +1335,11 @@ end
 
 -- Schedule a reconnection attempt
 function MCPRelay:scheduleReconnect()
+    if self.halted then
+        logger.info("MCP Relay: Not reconnecting:", self.halted)
+        return
+    end
+
     -- Prevent duplicate reconnect scheduling
     if self.reconnect_scheduled or self._registering then
         logger.dbg("MCP Relay: Reconnect already scheduled or registration in progress")
@@ -1018,6 +1384,7 @@ function MCPRelay:start()
 
     logger.info("MCP Relay: Starting")
     self.running = true
+    self.halted = nil
 
     -- Reset all state flags
     self.consecutive_empty_polls = 0

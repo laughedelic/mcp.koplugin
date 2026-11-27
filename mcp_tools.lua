@@ -17,9 +17,9 @@ local MCPTools = {
 -- This helps match text when LLMs replace typographic characters with ASCII equivalents
 -- e.g., smart quotes (') vs straight quotes ('), em-dashes (—) vs hyphens (-)
 --
--- Simple approach: replace punctuation and non-ASCII characters with regex wildcard (.)
--- This is intentionally loose - better to get multiple matches and pick the best one
--- than to miss the right match due to character encoding differences.
+-- Simple approach: replace quotes, dashes and their typographic variants with a
+-- regex wildcard (.). Other characters, including letters in any script, stay
+-- literal, so a query in e.g. Cyrillic still matches only its own text.
 
 -- ASCII punctuation that should be replaced with wildcards
 -- These have typographic equivalents that LLMs often swap
@@ -27,6 +27,18 @@ local WILDCARD_PUNCTUATION = {
     ["'"] = true, -- straight single quote (has smart quote equivalents)
     ['"'] = true, -- straight double quote (has smart quote equivalents)
     ["-"] = true, -- hyphen-minus (has en-dash, em-dash equivalents)
+}
+
+-- Typographic (non-ASCII) quotes, dashes and spaces that LLMs often swap for
+-- ASCII ones
+local WILDCARD_TYPOGRAPHIC = {
+    ["\226\128\152"] = true, ["\226\128\153"] = true, ["\226\128\154"] = true, ["\226\128\155"] = true, -- single quotes
+    ["\226\128\156"] = true, ["\226\128\157"] = true, ["\226\128\158"] = true, ["\226\128\159"] = true, -- double quotes
+    ["\194\171"] = true, ["\194\187"] = true, ["\226\128\185"] = true, ["\226\128\186"] = true, -- guillemets
+    ["\226\128\144"] = true, ["\226\128\145"] = true, ["\226\128\146"] = true, ["\226\128\147"] = true, -- dashes
+    ["\226\128\148"] = true, ["\226\128\149"] = true, ["\226\136\146"] = true,
+    ["\226\128\178"] = true, ["\226\128\179"] = true, -- primes
+    ["\194\160"] = true, ["\226\128\175"] = true, -- no-break spaces
 }
 
 -- Characters that need regex escaping (ECMAScript regex special chars)
@@ -58,8 +70,8 @@ local function textToFuzzyRegex(text)
             end
             i = i + 1
         else
-            -- Non-ASCII (UTF-8 multi-byte) - replace with wildcard
-            -- Skip all continuation bytes (10xxxxxx pattern)
+            -- Non-ASCII (UTF-8 multi-byte): a wildcard only for typographic
+            -- punctuation, otherwise the character itself
             local charLen = 1
             if byte >= 0xC0 and byte < 0xE0 then
                 charLen = 2
@@ -68,7 +80,8 @@ local function textToFuzzyRegex(text)
             elseif byte >= 0xF0 then
                 charLen = 4
             end
-            result = result .. "."
+            local char = text:sub(i, i + charLen - 1)
+            result = result .. (WILDCARD_TYPOGRAPHIC[char] and "." or char)
             i = i + charLen
         end
     end
