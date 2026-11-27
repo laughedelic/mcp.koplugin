@@ -237,8 +237,8 @@ The relay implementation is open source: [mcp-relay-cloudflare](https://github.c
 - **Audience validation**: Tokens are bound to your specific device
 - All traffic is encrypted (HTTPS), and the plugin verifies the relay's certificate and host name before sending its credentials. If your e-reader's clock is far off, the check fails; fix the date and time. For a development relay with a self-signed certificate, set `mcp_relay_tls_verify = false` in KOReader's `settings.reader.lua`
 - The relay doesn't store any book content, only forwards authenticated requests
-- **Device secret**: Your e-reader also generates a random secret that authenticates its connection to the relay, so knowing your device ID is not enough to receive your requests. The relay never forwards your AI client's access token to the e-reader
-- **Brute-force protection**: The relay locks the login for your device after repeated wrong passcodes
+- **Device secret** (needs an up-to-date relay): Your e-reader also generates a random secret that authenticates its connection to the relay, so knowing your device ID is not enough to receive your requests. The relay never forwards your AI client's access token to the e-reader. An older self-hosted relay ignores the secret, lets anyone who knows the device ID poll, and forwards the client's `Authorization` header, so the plugin shows a warning when the relay doesn't confirm the secret
+- **Brute-force protection** (also needs an up-to-date relay): The relay locks the login for your device after repeated wrong passcodes
 - You can reset your device ID and passcode anytime from the settings menu
 
 ## References
