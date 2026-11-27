@@ -177,9 +177,10 @@ function MCPProtocol:handleRequest(request)
         return self:createAcceptedResponse()
     end
 
-    -- Version this request speaks: the header (2025-06-18+), else what
-    -- initialize negotiated, else the spec's default for a missing header
-    local request_version = header_version or self.negotiatedVersion or "2025-03-26"
+    -- Version this request speaks. Clients on 2025-06-18+ send the header on
+    -- every request; a missing one means 2025-03-26 (per spec). Not the version
+    -- initialize negotiated: one protocol instance serves every client.
+    local request_version = header_version or "2025-03-26"
 
     -- Handle different MCP methods
     if method == "initialize" then

@@ -135,8 +135,13 @@ function MCP:init()
         end
         shared_state.relay.tls_verify = G_reader_settings:nilOrTrue("mcp_relay_tls_verify")
         shared_state.relay.onFatalError = function(message)
-            shared_state.relay_connected = false
-            MCP:refreshSettingsMenu(shared_state.settings_menu_instance)
+            -- The relay client has stopped retrying, so stop the server too:
+            -- status and menus then say "stopped" instead of "connecting".
+            -- Deferred, because this can fire from inside relay:start().
+            UIManager:nextTick(function()
+                MCP:stopServer()
+                MCP:refreshSettingsMenu(shared_state.settings_menu_instance)
+            end)
             UIManager:show(InfoMessage:new {
                 text = T(_("The cloud relay connection stopped:\n%1\n\nIf the relay rejected the credentials, reset the device ID in the MCP server settings (Settings → Network → MCP server) to register again."), message),
             })
@@ -901,6 +906,10 @@ function MCP:startRelay(show_notification)
     shared_state.protocol:setSendCallback(sendToClient)
 
     local success, device_id = shared_state.relay:start()
+    if success and shared_state.relay.halted then
+        -- Stopped during start (onFatalError already told the user why)
+        return false
+    end
     if success then
         shared_state.server_running = true
         shared_state.relay_running = true
