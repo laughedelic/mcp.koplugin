@@ -320,6 +320,11 @@ function MCPTools:list()
                     description =
                     "Optional: What to do if this passage already has a different note. If omitted, the user is asked (when the client supports it).",
                 },
+                note_check = {
+                    type = "string",
+                    description =
+                    "Optional: The note_check value from an earlier answer about an existing note. If the note changed since, nothing is changed and the new note is shown.",
+                },
             },
         },
         annotations = {
@@ -1044,6 +1049,19 @@ function MCPTools:annotate(args, ctx)
             isError = true,
         }
     end
+    -- The user's verified answer was to leave the note alone. Honor it even
+    -- if the note or highlight changed meanwhile, so nothing gets written.
+    if ctx and ctx.state and ctx.state.s == "existing_note" then
+        local action, content = MRTR.getElicitResponse(ctx.inputResponses, "existing_note")
+        if action == "decline" or action == "cancel"
+            or (action == "accept" and content.choice == "Keep the existing note") then
+            return {
+                content = {
+                    { type = "text", text = "Kept the existing note unchanged" },
+                },
+            }
+        end
+    end
 
     -- Check for duplicates using the annotation module's match function
     local annotations = self.ui.annotation.annotations or {}
@@ -1176,8 +1194,11 @@ function MCPTools:resolveExistingNote(existing, note_text, args, ctx, passage)
     if not existing.note or existing.note == "" then
         return "replace"
     end
+    -- Binds a choice the model got from the user to the note it asked about
+    local note_check = MRTR.digest({ passage, existing.note }):sub(1, 16)
     local explicit = args.if_note_exists
-    if explicit == "replace" or explicit == "append" or explicit == "keep" then
+    local check_ok = args.note_check == nil or args.note_check == note_check
+    if (explicit == "replace" or explicit == "append" or explicit == "keep") and check_ok then
         return explicit
     end
 
@@ -1226,14 +1247,18 @@ function MCPTools:resolveExistingNote(existing, note_text, args, ctx, passage)
             MRTR.encodeState("existing_note", digest, context))
     end
 
-    -- No way to ask the user directly: let the model ask and call again
+    -- No way to ask the user directly: let the model ask and call again.
+    -- note_check makes that call fail if the note changed in the meantime.
+    local changed = explicit ~= nil and not check_ok
     return nil, {
         content = {
             {
                 type = "text",
-                text = "This passage already has a different note: \"" .. existing.note .. "\". "
+                text = (changed and "The note changed since the user was asked. " or "")
+                    .. "This passage already has a different note: \"" .. existing.note .. "\". "
                     .. "Nothing was changed. Ask the user what to do, then call annotate again with "
-                    .. "if_note_exists set to \"replace\", \"append\" or \"keep\".",
+                    .. "if_note_exists set to \"replace\", \"append\" or \"keep\", and note_check set to \""
+                    .. note_check .. "\".",
             },
         },
     }

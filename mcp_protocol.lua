@@ -14,6 +14,19 @@
 --]]
 
 local rapidjson = require("rapidjson")
+
+-- A decoded JSON object (not an array). rapidjson marks decoded arrays with a
+-- metatable; a plain table with a [1] entry and no other keys is an array too.
+local function isJsonObject(v)
+    if type(v) ~= "table" then return false end
+    local mt = getmetatable(v)
+    if mt and mt.__jsontype then return mt.__jsontype == "object" end
+    if v[1] == nil then return true end
+    for k in pairs(v) do
+        if type(k) == "string" then return true end
+    end
+    return false
+end
 local logger = require("logger")
 local MRTR = require("mcp_mrtr")
 
@@ -158,7 +171,7 @@ function MCPProtocol:handleRequest(request)
     -- JSON-RPC: method is a string, id a string or number, params structured
     if (method ~= nil and type(method) ~= "string")
         or (id ~= nil and type(id) ~= "string" and type(id) ~= "number")
-        or (params ~= nil and type(params) ~= "table") then
+        or (params ~= nil and not isJsonObject(params)) then
         local reply_id = (type(id) == "string" or type(id) == "number") and id or nil
         return self:createErrorResponse(reply_id, INVALID_REQUEST, "Invalid Request", 400)
     end
@@ -474,7 +487,7 @@ function MCPProtocol:dispatch(method, params, ctx)
         end
         local arguments = params.arguments
         if arguments == rapidjson.null then arguments = nil end
-        if arguments ~= nil and type(arguments) ~= "table" then
+        if arguments ~= nil and not isJsonObject(arguments) then
             return nil, { code = INVALID_PARAMS, message = "Invalid params: arguments must be an object" }
         end
         arguments = arguments or {}
@@ -533,7 +546,7 @@ function MCPProtocol:dispatch(method, params, ctx)
         end
         local arguments = params.arguments
         if arguments == rapidjson.null then arguments = nil end
-        if arguments ~= nil and type(arguments) ~= "table" then
+        if arguments ~= nil and not isJsonObject(arguments) then
             return nil, { code = INVALID_PARAMS, message = "Invalid params: arguments must be an object" }
         end
         arguments = arguments or {}
