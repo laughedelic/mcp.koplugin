@@ -133,15 +133,21 @@ function MCP:init()
             G_reader_settings:saveSetting("mcp_relay_device_secret", secret)
             G_reader_settings:flush()
         end
-        shared_state.relay.onAuthError = function(message)
-            -- Show once per run: the reconnect loop would repeat it every few seconds
-            if shared_state.relay_auth_error_shown then
+        shared_state.relay.tls_verify = G_reader_settings:nilOrTrue("mcp_relay_tls_verify")
+        shared_state.relay.onFatalError = function(message)
+            shared_state.relay_connected = false
+            MCP:refreshSettingsMenu(shared_state.settings_menu_instance)
+            UIManager:show(InfoMessage:new {
+                text = T(_("The cloud relay connection stopped:\n%1\n\nIf the relay rejected the credentials, reset the device ID in the MCP server settings (Settings → Network → MCP server) to register again."), message),
+            })
+        end
+        shared_state.relay.onWarning = function(message)
+            -- Once per run: every reconnect would repeat it
+            if shared_state.relay_warning_shown then
                 return
             end
-            shared_state.relay_auth_error_shown = true
-            UIManager:show(InfoMessage:new {
-                text = T(_("The cloud relay rejected this device's credentials:\n%1\n\nIf this keeps happening, reset the device ID in the MCP server settings (Settings → Network → MCP server) to register again with new credentials."), message),
-            })
+            shared_state.relay_warning_shown = true
+            UIManager:show(InfoMessage:new { text = message })
         end
 
         -- Set up relay callbacks
@@ -570,7 +576,7 @@ function MCP:buildSettingsMenu(existing_items)
                         shared_state.relay:setPasscode(nil)
                         shared_state.relay:setPasscodeHash(nil)
                         shared_state.relay:setDeviceSecret(nil)
-                        shared_state.relay_auth_error_shown = false
+                        shared_state.relay_warning_shown = false
                         -- Restart server if running in remote mode
                         if shared_state.relay_running then
                             mcp_self:stopServer()

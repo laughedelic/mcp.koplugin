@@ -128,10 +128,20 @@ function MCPProtocol:handleRequest(request)
     -- Route request to appropriate handler
     local method = jsonRequest.method
     local id = jsonRequest.id
-    local params = jsonRequest.params or {}
+    local params = jsonRequest.params
 
     -- rapidjson decodes JSON null as a sentinel; treat it as absent
     if id == rapidjson.null then id = nil end
+    if params == rapidjson.null then params = nil end
+
+    -- JSON-RPC: method is a string, id a string or number, params structured
+    if (method ~= nil and type(method) ~= "string")
+        or (id ~= nil and type(id) ~= "string" and type(id) ~= "number")
+        or (params ~= nil and type(params) ~= "table") then
+        local reply_id = (type(id) == "string" or type(id) == "number") and id or nil
+        return self:createErrorResponse(reply_id, -32600, "Invalid Request", 400)
+    end
+    params = params or {}
 
     logger.dbg("MCP Request:", method, "ID:", id)
 
@@ -160,9 +170,16 @@ function MCPProtocol:handleRequest(request)
 
     -- Notifications (no id) never get a JSON-RPC response: HTTP 202 Accepted
     if id == nil then
-        self:handleNotification(method, params)
+        local ok_notification, notification_err = pcall(self.handleNotification, self, method, params)
+        if not ok_notification then
+            logger.warn("MCP: Error handling notification", method, notification_err)
+        end
         return self:createAcceptedResponse()
     end
+
+    -- Version this request speaks: the header (2025-06-18+), else what
+    -- initialize negotiated, else the spec's default for a missing header
+    local request_version = header_version or self.negotiatedVersion or "2025-03-26"
 
     -- Handle different MCP methods
     if method == "initialize" then
@@ -184,7 +201,7 @@ function MCPProtocol:handleRequest(request)
     elseif method == "tools/list" then
         return self:handleToolsList(id, params)
     elseif method == "tools/call" then
-        return self:handleToolsCall(id, params)
+        return self:handleToolsCall(id, params, request_version)
     elseif method == "prompts/list" then
         return self:handlePromptsList(id, params)
     elseif method == "prompts/get" then
@@ -229,7 +246,7 @@ function MCPProtocol:handleNotification(method, params)
         self.initialized = true
     elseif method == "notifications/cancelled" then
         -- Requests are handled synchronously, so there is nothing to cancel
-        logger.dbg("MCP: Client cancelled request", params.requestId)
+        logger.dbg("MCP: Client cancelled request", params and params.requestId)
     else
         self:handleClientNotification({ method = method, params = params })
     end
@@ -376,7 +393,24 @@ function MCPProtocol:handleToolsList(id, params)
     return self:createSuccessResponse(id, { tools = result })
 end
 
-function MCPProtocol:handleToolsCall(id, params)
+-- resource_link content was added in 2025-06-18; older clients reject it,
+-- so give them the link as text instead
+local function adaptToolResult(result, version)
+    if version ~= "2025-03-26" or type(result) ~= "table" or type(result.content) ~= "table" then
+        return result
+    end
+    for i, item in ipairs(result.content) do
+        if type(item) == "table" and item.type == "resource_link" then
+            result.content[i] = {
+                type = "text",
+                text = (item.name or "Resource") .. ": " .. tostring(item.uri),
+            }
+        end
+    end
+    return result
+end
+
+function MCPProtocol:handleToolsCall(id, params, version)
     if not self.tools then
         return self:createErrorResponse(id, -32603, "Tools not available")
     end
@@ -401,7 +435,7 @@ function MCPProtocol:handleToolsCall(id, params)
         return self:createErrorResponse(id, -32602, "Tool not found")
     end
 
-    return self:createSuccessResponse(id, result)
+    return self:createSuccessResponse(id, adaptToolResult(result, version))
 end
 
 function MCPProtocol:handlePromptsList(id, params)
