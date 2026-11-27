@@ -5,5 +5,5 @@ return {
     name = "mcp",
     fullname = _("MCP Server"),
     description = _("Model Context Protocol server for AI-powered book interaction"),
-    version = "0.3.0",
+    version = "0.8.0",
 }
