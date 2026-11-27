@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LuaJIT and ShellCheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq luajit shellcheck
+      - name: Compile every Lua file with LuaJIT (KOReader's runtime)
+        run: |
+          status=0
+          for f in *.lua; do
+            luajit -b "$f" /dev/null || status=1
+          done
+          exit $status
+      - name: Check that _meta.lua has a version
+        run: grep -Eq 'version = "[0-9]+\.[0-9]+\.[0-9]+"' _meta.lua
+      - name: ShellCheck scripts
+        run: shellcheck --severity=warning scripts/*.sh
