@@ -7,6 +7,7 @@
 local logger = require("logger")
 local rapidjson = require("rapidjson")
 local Event = require("ui/event")
+local MRTR = require("mcp_mrtr")
 
 local MCPTools = {
     ui = nil,
@@ -313,6 +314,12 @@ function MCPTools:list()
                     type = "string",
                     description = "Optional: End position (XPointer) from search_book results.",
                 },
+                if_note_exists = {
+                    type = "string",
+                    enum = { "replace", "append", "keep" },
+                    description =
+                    "Optional: What to do if this passage already has a different note. If omitted, the user is asked (when the client supports it).",
+                },
             },
         },
         annotations = {
@@ -326,7 +333,9 @@ function MCPTools:list()
     return tools
 end
 
-function MCPTools:call(name, arguments)
+-- @param ctx table|nil: request context from the protocol layer
+--        ({ modern, clientCapabilities, inputResponses, requestState })
+function MCPTools:call(name, arguments, ctx)
     if not self.ui or not self.ui.document then
         return {
             content = {
@@ -351,7 +360,7 @@ function MCPTools:call(name, arguments)
     elseif name == "goto_page" then
         return self:gotoPage(arguments)
     elseif name == "annotate" then
-        return self:annotate(arguments)
+        return self:annotate(arguments, ctx)
     else
         return nil -- Tool not found
     end
@@ -894,7 +903,7 @@ function MCPTools:gotoPage(args)
     }
 end
 
-function MCPTools:annotate(args)
+function MCPTools:annotate(args, ctx)
     -- This function adds a highlight or note to text
     -- If note is provided, it creates a highlight with a note
     -- If note is omitted, it creates just a highlight
@@ -1042,14 +1051,32 @@ function MCPTools:annotate(args)
         if matches then
             -- If a note is provided and different from existing, update it
             if note_text and note_text ~= "" and existing.note ~= note_text then
-                existing.note = note_text
+                local decision, prompt_result = self:resolveExistingNote(existing, note_text, args, ctx)
+                if prompt_result then
+                    return prompt_result
+                end
+                if decision == "keep" then
+                    return {
+                        content = {
+                            { type = "text", text = "Kept the existing note unchanged" },
+                        },
+                    }
+                end
+                local had_note = existing.note and existing.note ~= ""
+                if decision == "append" and had_note then
+                    existing.note = existing.note .. "\n\n" .. note_text
+                else
+                    existing.note = note_text
+                end
                 existing.datetime_updated = os.date("%Y-%m-%d %H:%M:%S")
                 -- Notify the UI about the modification
                 self.ui:handleEvent(Event:new("AnnotationsModified", { existing }))
 
+                local verb = not had_note and "Added note to"
+                    or (decision == "append" and "Appended to the note on" or "Replaced the note on")
                 return {
                     content = {
-                        { type = "text", text = "Updated note on existing highlight" },
+                        { type = "text", text = verb .. " existing highlight" },
                     },
                 }
             else
@@ -1105,6 +1132,75 @@ function MCPTools:annotate(args)
     return {
         content = {
             { type = "text", text = response },
+        },
+    }
+end
+
+-- Decide what to do when annotate would overwrite an existing note.
+-- Asks the user through elicitation when the client supports it (MCP
+-- 2026-07-28 multi round-trip request); otherwise asks the model to choose.
+-- @return decision ("replace", "append", "keep"), or nil and a tool result
+--         to return instead (a question for the user or the model)
+function MCPTools:resolveExistingNote(existing, note_text, args, ctx)
+    if not existing.note or existing.note == "" then
+        return "replace"
+    end
+    local explicit = args.if_note_exists
+    if explicit == "replace" or explicit == "append" or explicit == "keep" then
+        return explicit
+    end
+
+    local CHOICES = {
+        ["Replace it"] = "replace",
+        ["Add the new note below it"] = "append",
+        ["Keep the existing note"] = "keep",
+    }
+
+    if ctx and ctx.modern and MRTR.supportsFormElicitation(ctx.clientCapabilities) then
+        local digest = MRTR.callDigest("tools/call", "annotate", args)
+        if ctx.requestState then
+            local state = MRTR.decodeState(ctx.requestState, digest)
+            if state and state.s == "existing_note" then
+                local action, content = MRTR.getElicitResponse(ctx.inputResponses, "existing_note")
+                if action == "accept" and CHOICES[content.choice] then
+                    return CHOICES[content.choice]
+                elseif action == "decline" or action == "cancel" then
+                    return "keep"
+                end
+                -- No usable answer: ask again below
+            end
+        end
+
+        local preview = existing.note
+        if #preview > 200 then
+            preview = preview:sub(1, 200) .. "…"
+        end
+        return nil, MRTR.elicitForm("existing_note",
+            "This passage already has a note:\n\n" .. preview .. "\n\nWhat should happen to it?",
+            {
+                type = "object",
+                properties = {
+                    choice = {
+                        type = "string",
+                        title = "Existing note",
+                        enum = { "Replace it", "Add the new note below it", "Keep the existing note" },
+                        default = "Add the new note below it",
+                    },
+                },
+                required = { "choice" },
+            },
+            MRTR.encodeState("existing_note", digest))
+    end
+
+    -- No way to ask the user directly: let the model ask and call again
+    return nil, {
+        content = {
+            {
+                type = "text",
+                text = "This passage already has a different note: \"" .. existing.note .. "\". "
+                    .. "Nothing was changed. Ask the user what to do, then call annotate again with "
+                    .. "if_note_exists set to \"replace\", \"append\" or \"keep\".",
+            },
         },
     }
 end

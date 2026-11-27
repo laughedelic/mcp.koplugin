@@ -13,7 +13,8 @@ The Model Context Protocol (MCP) is an open standard that enables AI assistants 
 - **Book Content Access**: AI assistants can read your current book's content at different scopes (current page, chapter, specific page ranges)
 - **Metadata Retrieval**: Access book metadata including title, author, reading progress, and statistics
 - **Interactive Tools**: Search within books, navigate to pages, get table of contents, add highlights and notes
-- **MCP 2025-03-26 to 2025-11-25**: The server negotiates the protocol version with the client
+- **Any modern MCP client**: Speaks both stateless MCP (2026-07-28) and the earlier handshake-based versions (2025-03-26 to 2025-11-25) on the same endpoint
+- **Asks you when it matters**: With clients that support elicitation (e.g. Claude), the server asks you before overwriting a note you already wrote
 - **Local Network Protection**: Requests from web pages on other sites are rejected (Origin validation against DNS rebinding)
 - **Cloud Relay**: Access your e-reader from anywhere via a cloud relay
 
@@ -167,9 +168,23 @@ Prompts are pre-defined conversation starters for common reading companion inter
 | `translate` | Translate       | Translate text to another language                            |
 | `recommend` | Recommend Books | Get personalized book recommendations                         |
 
-### Server-Initiated Features (not available yet)
+### Protocol Versions
 
-The plugin contains groundwork for resource change notifications (page turns, book changes, selection), logging, sampling and elicitation (`mcp_client_features.lua`). Neither transport can deliver server-initiated messages yet: local mode has no SSE stream, and the cloud relay has no server-to-client channel. Until they can, the server doesn't advertise resource subscriptions, so clients don't wait for updates that never arrive.
+| Client speaks            | How it connects                                                                                        |
+| ------------------------ | ------------------------------------------------------------------------------------------------------ |
+| 2026-07-28 (stateless)   | Every request carries its version and capabilities in `_meta`; `server/discover` describes the server |
+| 2025-03-26 to 2025-11-25 | `initialize` handshake; the server answers with the client's version                                    |
+
+Clients that speak both try 2026-07-28 first and fall back automatically.
+
+### Elicitation
+
+On 2026-07-28 clients that declare form elicitation, `annotate` asks the user before changing a note that already exists (replace it, add below it, or keep it). The question travels inside the tool result (an `input_required` result, the protocol's multi round-trip request pattern) and the client retries the call with the answer, so it works through the cloud relay without any extra channel. With other clients, the tool doesn't touch the note and asks the AI to check with you and call again with `if_note_exists`.
+
+### Not Supported
+
+- **Sampling and server logging**: deprecated in MCP 2026-07-28 and not implemented.
+- **Live change notifications** (page turns, book changes): planned through the 2026-07-28 `subscriptions/listen` stream. Until then the server doesn't advertise resource subscriptions, so clients don't wait for updates that never arrive.
 
 
 ## Local & Remote Modes
