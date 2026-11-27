@@ -877,7 +877,6 @@ function MCP:startRelay(show_notification)
         -- The shared flags were never set, so stop the relay client here;
         -- otherwise the next start would find it "already running".
         shared_state.relay:stop()
-        shared_state.protocol:setSendCallback(nil)
         return false
     end
     if success then
