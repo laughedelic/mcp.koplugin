@@ -322,6 +322,11 @@ function MCPRelay:findCACertificates()
     return cafile, capath
 end
 
+-- Whether a host is an IPv4 or IPv6 literal
+local function isIpLiteral(host)
+    return host:match("^%d+%.%d+%.%d+%.%d+$") ~= nil or host:find(":") ~= nil
+end
+
 -- RFC 6125 host name match, with a single left-most wildcard label
 local function hostMatches(pattern, host)
     if type(pattern) ~= "string" then return false end
@@ -344,6 +349,18 @@ function MCPRelay.certificateMatchesHost(cert, host)
     if not cert or not host then return false end
     local ok, extensions = pcall(cert.extensions, cert)
     local san = ok and type(extensions) == "table" and extensions["2.5.29.17"]
+    -- An IP address only matches an iPAddress SAN (never DNS names or the CN)
+    local bare_host = host:gsub("^%[(.*)%]$", "%1")
+    if isIpLiteral(bare_host) then
+        if type(san) == "table" and type(san.iPAddress) == "table" then
+            for _, address in ipairs(san.iPAddress) do
+                if type(address) == "string" and address:lower() == bare_host:lower() then
+                    return true
+                end
+            end
+        end
+        return false
+    end
     if type(san) == "table" and type(san.dNSName) == "table" and #san.dNSName > 0 then
         for _, name in ipairs(san.dNSName) do
             if hostMatches(name, host) then
@@ -849,7 +866,13 @@ function MCPRelay:register(callback)
         end
 
         if not response or response.code ~= 200 then
-            local error_msg = response and response.code or "Connection failed"
+            local error_msg = response and (response.code or response.error) or "Connection failed"
+            -- Certificate problems won't fix themselves on retry the way a
+            -- dropped connection does, so tell the user (once) what's wrong
+            local transport_error = response and response.error and tostring(response.error)
+            if transport_error and (transport_error:find("^TLS") or transport_error:find("SSL")) and self.onWarning then
+                self.onWarning("Can't connect securely to the relay:\n" .. transport_error)
+            end
             logger.err("MCP Relay: Registration failed after", string.format("%.2fs", elapsed), "-", error_msg)
             if callback then
                 callback(false, "Registration failed: " .. tostring(error_msg))

@@ -224,9 +224,10 @@ function MCPProtocol:handleLegacyMessage(jsonRequest, method, id, params, header
         return self:respond(id, self:resourcesSubscription(method, params))
     end
 
-    -- Version this request speaks: the header (2025-06-18+), else what
-    -- initialize negotiated, else the spec's default for a missing header
-    local version = header_version or self.negotiatedVersion or "2025-03-26"
+    -- Version this request speaks. Clients on 2025-06-18+ send the header on
+    -- every request; a missing one means 2025-03-26 (per spec). Not the version
+    -- initialize negotiated: one protocol instance serves every client.
+    local version = header_version or "2025-03-26"
     local result, err = self:dispatch(method, params, { modern = false, version = version })
     if result == nil and err == nil then
         return self:createErrorResponse(id, METHOD_NOT_FOUND, "Method not found")
