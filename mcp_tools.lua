@@ -331,7 +331,7 @@ function MCPTools:list()
                     type = "string",
                     enum = { "replace", "append", "keep" },
                     description =
-                    "Optional: What to do if this passage already has a different note. If omitted, the user is asked (when the client supports it).",
+                    "Optional: What to do if this passage already has a different note. If omitted, nothing is changed and you are told to ask the user (or the user is asked directly with a form, if enabled in the plugin).",
                 },
             },
         },
@@ -1198,6 +1198,14 @@ local function utf8Prefix(s, max_bytes)
 end
 MCPTools._utf8Prefix = utf8Prefix
 
+-- Whether to ask about an existing note with an elicitation form. Off by
+-- default: some clients declare form support but can't show the form in every
+-- view (e.g. Claude project threads), and the call then hangs. Asking the model
+-- to ask in chat works everywhere.
+function MCPTools:noteFormEnabled()
+    return G_reader_settings ~= nil and G_reader_settings:isTrue("mcp_annotate_note_form")
+end
+
 function MCPTools:resolveExistingNote(existing, note_text, args, ctx, passage)
     if not existing.note or existing.note == "" then
         return "replace"
@@ -1213,7 +1221,8 @@ function MCPTools:resolveExistingNote(existing, note_text, args, ctx, passage)
         ["Keep the existing note"] = "keep",
     }
 
-    if ctx and ctx.modern and MRTR.supportsFormElicitation(ctx.clientCapabilities) and MRTR.available() then
+    if self:noteFormEnabled() and ctx and ctx.modern
+        and MRTR.supportsFormElicitation(ctx.clientCapabilities) and MRTR.available() then
         local digest = MRTR.callDigest("tools/call", "annotate", args)
         -- The question is about this note on this passage: bind the state to
         -- both, so a changed note (or a replayed answer) asks again

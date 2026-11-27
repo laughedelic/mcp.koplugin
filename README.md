@@ -14,7 +14,7 @@ The Model Context Protocol (MCP) is an open standard that enables AI assistants 
 - **Metadata Retrieval**: Access book metadata including title, author, reading progress, and statistics
 - **Interactive Tools**: Search within books, navigate to pages, get table of contents, add highlights and notes
 - **Any modern MCP client**: Speaks both stateless MCP (2026-07-28) and the earlier handshake-based versions (2025-03-26 to 2025-11-25) on the same endpoint
-- **Asks you when it matters**: With clients that support elicitation (e.g. Claude), the server asks you before overwriting a note you already wrote
+- **Asks you when it matters**: Before overwriting a note you already wrote, the AI checks with you first (in chat, or with a form if you turn that on)
 - **Local Network Protection**: Requests from web pages on other sites are rejected (Origin validation against DNS rebinding)
 - **Cloud Relay**: Access your e-reader from anywhere via a cloud relay
 
@@ -189,7 +189,9 @@ Clients that speak both try 2026-07-28 first and fall back automatically.
 
 ### Elicitation
 
-On 2026-07-28 clients that declare form elicitation, `annotate` asks the user before changing a note that already exists (replace it, add below it, or keep it). The question travels inside the tool result (an `input_required` result, the protocol's multi round-trip request pattern) and the client retries the call with the answer, so it works through the cloud relay without any extra channel. With other clients, the tool doesn't touch the note and asks the AI to check with you and call again with `if_note_exists`.
+By default, `annotate` doesn't touch a note that already exists: it tells the AI to ask you in chat and call again with `if_note_exists`. This works in every client and view.
+
+With **Ask with a form before replacing a note** turned on in the plugin settings, 2026-07-28 clients that declare form elicitation get a form instead, which asks the user before changing a note that already exists (replace it, add below it, or keep it). The question travels inside the tool result (an `input_required` result, the protocol's multi round-trip request pattern) and the client retries the call with the answer, so it works through the cloud relay without any extra channel. Other clients get the chat question. It's off by default because some clients declare form support but can't show the form in every view (Claude project threads, for example), and the call then waits until it times out.
 
 ### Not Supported
 

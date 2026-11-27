@@ -328,6 +328,20 @@ function MCP:buildSettingsMenu(existing_items)
         keep_menu_open = true,
     })
 
+    -- Ask about existing notes with a form
+    table.insert(items, {
+        text = _("Ask with a form before replacing a note"),
+        help_text = _("When an AI adds a note to a passage that already has one, show the user a form in the AI app to choose what happens. Not every app can show it everywhere, and the request then waits. When off, the AI asks in chat instead."),
+        checked_func = function()
+            return G_reader_settings:isTrue("mcp_annotate_note_form")
+        end,
+        callback = function(touchmenu_instance)
+            G_reader_settings:flipNilOrFalse("mcp_annotate_note_form")
+            self:refreshSettingsMenu(touchmenu_instance)
+        end,
+        keep_menu_open = true,
+    })
+
     -- Idle timeout (checkbox, long-hold to edit)
     table.insert(items, {
         text_func = function()
