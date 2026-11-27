@@ -147,11 +147,12 @@ function MCP:init()
             })
         end
         shared_state.relay.onWarning = function(message)
-            -- Once per run: every reconnect would repeat it
-            if shared_state.relay_warning_shown then
+            -- Each distinct warning once per run: every reconnect would repeat it
+            shared_state.relay_warnings_shown = shared_state.relay_warnings_shown or {}
+            if shared_state.relay_warnings_shown[message] then
                 return
             end
-            shared_state.relay_warning_shown = true
+            shared_state.relay_warnings_shown[message] = true
             UIManager:show(InfoMessage:new { text = message })
         end
 
@@ -581,7 +582,7 @@ function MCP:buildSettingsMenu(existing_items)
                         shared_state.relay:setPasscode(nil)
                         shared_state.relay:setPasscodeHash(nil)
                         shared_state.relay:setDeviceSecret(nil)
-                        shared_state.relay_warning_shown = false
+                        shared_state.relay_warnings_shown = nil
                         -- Restart server if running in remote mode
                         if shared_state.relay_running then
                             mcp_self:stopServer()
@@ -907,7 +908,11 @@ function MCP:startRelay(show_notification)
 
     local success, device_id = shared_state.relay:start()
     if success and shared_state.relay.halted then
-        -- Stopped during start (onFatalError already told the user why)
+        -- Stopped during start (onFatalError already told the user why).
+        -- The shared flags were never set, so stop the relay client here;
+        -- otherwise the next start would find it "already running".
+        shared_state.relay:stop()
+        shared_state.protocol:setSendCallback(nil)
         return false
     end
     if success then

@@ -327,6 +327,51 @@ local function isIpLiteral(host)
     return host:match("^%d+%.%d+%.%d+%.%d+$") ~= nil or host:find(":") ~= nil
 end
 
+-- Canonical form of an IP address (IPv6 fully expanded, lowercase), so that
+-- equivalent spellings compare equal. Returns nil for invalid input.
+local function normalizeIp(address)
+    if type(address) ~= "string" then return nil end
+    address = address:lower()
+    if not address:find(":") then
+        local a, b, c, d = address:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+        if not a then return nil end
+        local parts = { tonumber(a), tonumber(b), tonumber(c), tonumber(d) }
+        for _, n in ipairs(parts) do
+            if n > 255 then return nil end
+        end
+        return table.concat(parts, ".")
+    end
+    -- An embedded IPv4 tail (e.g. ::ffff:1.2.3.4) becomes two hex groups
+    local head, v4 = address:match("^(.*:)(%d+%.%d+%.%d+%.%d+)$")
+    if head then
+        local four = normalizeIp(v4)
+        if not four then return nil end
+        local a, b, c, d = four:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+        address = head .. string.format("%x:%x", tonumber(a) * 256 + tonumber(b), tonumber(c) * 256 + tonumber(d))
+    end
+    local left, right = address:match("^(.-)::(.*)$")
+    local groups = {}
+    local function split(s, out)
+        if s == "" then return true end
+        for g in (s .. ":"):gmatch("([^:]*):") do
+            if not g:match("^%x%x?%x?%x?$") then return false end
+            out[#out + 1] = string.format("%04x", tonumber(g, 16))
+        end
+        return true
+    end
+    if left then
+        local l, r = {}, {}
+        if not split(left, l) or not split(right, r) or #l + #r > 7 then return nil end
+        for _, g in ipairs(l) do groups[#groups + 1] = g end
+        for _ = 1, 8 - #l - #r do groups[#groups + 1] = "0000" end
+        for _, g in ipairs(r) do groups[#groups + 1] = g end
+    else
+        if not split(address, groups) or #groups ~= 8 then return nil end
+    end
+    return table.concat(groups, ":")
+end
+MCPRelay._normalizeIp = normalizeIp
+
 -- RFC 6125 host name match, with a single left-most wildcard label
 local function hostMatches(pattern, host)
     if type(pattern) ~= "string" then return false end
@@ -353,8 +398,9 @@ function MCPRelay.certificateMatchesHost(cert, host)
     local bare_host = host:gsub("^%[(.*)%]$", "%1")
     if isIpLiteral(bare_host) then
         if type(san) == "table" and type(san.iPAddress) == "table" then
+            local wanted = normalizeIp(bare_host)
             for _, address in ipairs(san.iPAddress) do
-                if type(address) == "string" and address:lower() == bare_host:lower() then
+                if wanted and normalizeIp(address) == wanted then
                     return true
                 end
             end
@@ -870,7 +916,11 @@ function MCPRelay:register(callback)
             -- Certificate problems won't fix themselves on retry the way a
             -- dropped connection does, so tell the user (once) what's wrong
             local transport_error = response and response.error and tostring(response.error)
-            if transport_error and (transport_error:find("^TLS") or transport_error:find("SSL")) and self.onWarning then
+            -- Only verification failures: a handshake cut short ("closed") is
+            -- an ordinary network hiccup and just retries
+            local is_verification_error = transport_error and (transport_error:find("^TLS:")
+                or (transport_error:find("^SSL handshake failed") and transport_error:find("certificate")))
+            if is_verification_error and self.onWarning then
                 self.onWarning("Can't connect securely to the relay:\n" .. transport_error)
             end
             logger.err("MCP Relay: Registration failed after", string.format("%.2fs", elapsed), "-", error_msg)
