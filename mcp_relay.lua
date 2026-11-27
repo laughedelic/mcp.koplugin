@@ -919,6 +919,7 @@ function MCPRelay:register(callback)
             -- Only verification failures: a handshake cut short ("closed") is
             -- an ordinary network hiccup and just retries
             local is_verification_error = transport_error and (transport_error:find("^TLS:")
+                or transport_error:find("^SSL wrap failed")
                 or (transport_error:find("^SSL handshake failed") and transport_error:find("certificate")))
             if is_verification_error and self.onWarning then
                 self.onWarning("Can't connect securely to the relay:\n" .. transport_error)
