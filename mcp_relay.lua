@@ -672,25 +672,36 @@ function MCPRelay:httpRequestAsync(request_url, method, body, callback, extra_he
                 if is_https then
                     state.phase = "handshake"
                     -- Wrap socket with SSL
-                    local ssl_params = {
-                        mode = "client",
-                        protocol = "any",
-                        options = { "all", "no_sslv3" },
-                    }
-                    if self.tls_verify then
-                        local cafile, capath = self:findCACertificates()
-                        if not cafile and not capath then
-                            on_error("TLS: no CA certificate bundle found to verify the relay")
+                    -- Build the TLS context (and load the CA bundle) once,
+                    -- not on every poll
+                    local verify = self.tls_verify and true or false
+                    if not self._ssl_ctx or self._ssl_ctx_verify ~= verify then
+                        local ssl_params = {
+                            mode = "client",
+                            protocol = "any",
+                            options = { "all", "no_sslv3" },
+                        }
+                        if verify then
+                            local cafile, capath = self:findCACertificates()
+                            if not cafile and not capath then
+                                on_error("TLS: no CA certificate bundle found to verify the relay")
+                                return
+                            end
+                            ssl_params.verify = { "peer", "fail_if_no_peer_cert" }
+                            ssl_params.cafile = cafile
+                            ssl_params.capath = capath
+                        else
+                            ssl_params.verify = "none"
+                        end
+                        local ctx, ctx_err = ssl.newcontext(ssl_params)
+                        if not ctx then
+                            on_error("SSL wrap failed: " .. tostring(ctx_err))
                             return
                         end
-                        ssl_params.verify = { "peer", "fail_if_no_peer_cert" }
-                        ssl_params.cafile = cafile
-                        ssl_params.capath = capath
-                    else
-                        ssl_params.verify = "none"
+                        self._ssl_ctx, self._ssl_ctx_verify = ctx, verify
                     end
 
-                    local ssl_sock, wrap_err = ssl.wrap(state.sock, ssl_params)
+                    local ssl_sock, wrap_err = ssl.wrap(state.sock, self._ssl_ctx)
                     if not ssl_sock then
                         on_error("SSL wrap failed: " .. tostring(wrap_err))
                         return
@@ -838,7 +849,10 @@ function MCPRelay:register(callback)
     end
 
     -- Check if this is a first registration (no credentials yet)
-    local is_first_registration = not self.device_id or not self.passcode_hash
+    -- (or credentials generated earlier whose registration never succeeded,
+    -- e.g. a TLS failure, so the passcode still gets saved and shown)
+    local is_first_registration = self.first_registration_pending
+        or not self.device_id or not self.passcode_hash
 
     -- Credentials come only from a secure random source; without one, stop
     -- rather than register guessable credentials
@@ -852,6 +866,7 @@ function MCPRelay:register(callback)
             self.device_id = device_id
             self.passcode = passcode -- Save for display to user
             self.passcode_hash = passcode_hash
+            self.first_registration_pending = true
 
             logger.info("MCP Relay: Generated new credentials for device:", self.device_id)
         end
@@ -961,6 +976,9 @@ function MCPRelay:register(callback)
 
         -- On first registration, call callback to show passcode to user
         -- (passcode was generated locally, so we have it available)
+        if is_first_registration then
+            self.first_registration_pending = nil
+        end
         if is_first_registration and self.passcode then
             logger.info("MCP Relay: First registration complete, showing credentials to user")
 
