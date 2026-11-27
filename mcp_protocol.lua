@@ -1,27 +1,84 @@
 --[[
     MCP Protocol Handler
-    Implements the Model Context Protocol (MCP) using JSON-RPC 2.0
-    Handles initialization, capability negotiation, and request routing
+    Implements the Model Context Protocol (MCP) using JSON-RPC 2.0 over
+    Streamable HTTP.
+
+    The server is "dual-era":
+    - Legacy clients (protocol 2025-03-26 to 2025-11-25) open with the
+      `initialize` handshake.
+    - Modern clients (protocol 2026-07-28, stateless) send the protocol
+      version and their capabilities in every request's `_meta`, may call
+      `server/discover`, and receive user-input requests (elicitation) as
+      `input_required` results instead of server-initiated requests.
+    Both are served on the same endpoint; each request is answered on its own.
 --]]
 
 local rapidjson = require("rapidjson")
+
+-- A decoded JSON object (not an array). rapidjson marks decoded arrays with a
+-- metatable; a plain table with a [1] entry and no other keys is an array too.
+local function isJsonObject(v)
+    if type(v) ~= "table" then return false end
+    local mt = getmetatable(v)
+    if mt and mt.__jsontype then return mt.__jsontype == "object" end
+    if v[1] == nil then return true end
+    for k in pairs(v) do
+        if type(k) == "string" then return true end
+    end
+    return false
+end
 local logger = require("logger")
+local MRTR = require("mcp_mrtr")
 
--- Protocol versions this server speaks, newest first.
--- (2026-07-28 "stateless" MCP is not supported yet; clients that speak both
--- generations fall back to these via the initialize handshake.)
-local SUPPORTED_VERSIONS = { "2025-11-25", "2025-06-18", "2025-03-26" }
+-- Stateless protocol versions (per-request _meta, no initialize), newest first
+local MODERN_VERSIONS = { "2026-07-28" }
+-- Handshake-based protocol versions, newest first
+local LEGACY_VERSIONS = { "2025-11-25", "2025-06-18", "2025-03-26" }
 
-local function isSupportedVersion(v)
-    for _, supported in ipairs(SUPPORTED_VERSIONS) do
-        if v == supported then return true end
+local ALL_VERSIONS = {}
+for _, v in ipairs(MODERN_VERSIONS) do ALL_VERSIONS[#ALL_VERSIONS + 1] = v end
+for _, v in ipairs(LEGACY_VERSIONS) do ALL_VERSIONS[#ALL_VERSIONS + 1] = v end
+
+local META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+local META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+local META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+local META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
+
+-- JSON-RPC error codes
+local PARSE_ERROR = -32700
+local INVALID_REQUEST = -32600
+local METHOD_NOT_FOUND = -32601
+local INVALID_PARAMS = -32602
+local INTERNAL_ERROR = -32603
+-- MCP 2026-07-28 error codes
+local HEADER_MISMATCH = -32020
+local UNSUPPORTED_PROTOCOL_VERSION = -32022
+
+-- Cache hints for modern results (CacheableResult). Everything here is
+-- personal (the user's books), so caches must never be shared.
+local CACHE_STATIC = { ttlMs = 3600000, cacheScope = "private" } -- tool/prompt/template lists
+local CACHE_LIVE = { ttlMs = 0, cacheScope = "private" }         -- depends on the open book and page
+
+-- Methods whose name is mirrored into the Mcp-Name header
+local MCP_NAME_SOURCE = {
+    ["tools/call"] = "name",
+    ["prompts/get"] = "name",
+    ["resources/read"] = "uri",
+}
+
+local INSTRUCTIONS = "Access to the book the user is reading in KOReader on their e-reader. "
+    .. "Start with get_reading_context to see the current book, page and selection."
+
+local function contains(list, value)
+    for _, v in ipairs(list) do
+        if v == value then return true end
     end
     return false
 end
 
 local MCPProtocol = {
-    version = SUPPORTED_VERSIONS[1], -- latest supported MCP protocol version
-    supportedVersions = SUPPORTED_VERSIONS,
+    version = LEGACY_VERSIONS[1], -- latest handshake-based version
+    supportedVersions = ALL_VERSIONS,
     serverInfo = {
         name = "koreader-mcp",
         title = "KOReader",
@@ -31,11 +88,7 @@ local MCPProtocol = {
     resources = nil,
     tools = nil,
     prompts = nil,
-    clientFeatures = nil, -- For sampling, elicitation, logging
     initialized = false,
-
-    -- Callback for sending notifications/requests to client
-    sendToClient = nil,
 }
 
 function MCPProtocol:new(o)
@@ -47,11 +100,10 @@ end
 
 function MCPProtocol:setResources(resources)
     self.resources = resources
-    -- Subscriptions and list-change notifications are not advertised:
-    -- neither transport can deliver server-initiated messages yet (local mode
-    -- has no SSE stream, and the relay has no server-to-client channel), so
-    -- clients would subscribe and wait for updates that never arrive.
-    -- resources/subscribe is still accepted for clients that call it anyway.
+    -- Subscriptions and list-change notifications are not advertised: no
+    -- transport delivers server-initiated messages yet. In 2026-07-28 they
+    -- would come through a subscriptions/listen stream instead.
+    -- resources/subscribe is still accepted for legacy clients that call it.
     self.capabilities.resources = {
         subscribe = false,
         listChanged = false,
@@ -72,19 +124,9 @@ function MCPProtocol:setPrompts(prompts)
     }
 end
 
-function MCPProtocol:setClientFeatures(clientFeatures)
-    self.clientFeatures = clientFeatures
-    -- Server declares logging capability
-    self.capabilities.logging = {}
-end
-
--- Set callback for sending messages to client (notifications, requests)
-function MCPProtocol:setSendCallback(callback)
-    self.sendToClient = callback
-    if self.clientFeatures then
-        self.clientFeatures:setSendCallback(callback)
-    end
-end
+--------------------------------------------------------------------------------
+-- Entry point
+--------------------------------------------------------------------------------
 
 function MCPProtocol:handleRequest(request)
     -- Streamable HTTP: the MCP endpoint only accepts POST. This server offers
@@ -102,34 +144,26 @@ function MCPProtocol:handleRequest(request)
     -- Parse JSON-RPC request
     local ok, jsonRequest = pcall(rapidjson.decode, request.body)
     if not ok or not jsonRequest then
-        -- Log detailed error information for debugging
         local body_preview = request.body or "(empty)"
         if #body_preview > 200 then
             body_preview = body_preview:sub(1, 200) .. "... (truncated, total " .. #request.body .. " bytes)"
         end
-        local error_msg = not ok and tostring(jsonRequest) or "JSON decoded to nil/false"
-        logger.warn("Invalid JSON in MCP request:")
-        logger.warn("  Error:", error_msg)
-        logger.warn("  Body:", body_preview)
-        logger.warn("  Content-Length:", request.headers and request.headers["content-length"] or "unknown")
-        return self:createErrorResponse(nil, -32700, "Parse error", 400)
+        logger.warn("Invalid JSON in MCP request:", not ok and tostring(jsonRequest) or "decoded to nil", body_preview)
+        return self:createErrorResponse(nil, PARSE_ERROR, "Parse error", 400)
     end
 
     -- JSON-RPC batches were removed in MCP 2025-06-18 and never supported here
     if type(jsonRequest) ~= "table" or jsonRequest[1] ~= nil then
-        return self:createErrorResponse(nil, -32600, "Invalid Request: batches are not supported", 400)
+        return self:createErrorResponse(nil, INVALID_REQUEST, "Invalid Request: batches are not supported", 400)
     end
 
-    -- Validate JSON-RPC structure
     if jsonRequest.jsonrpc ~= "2.0" then
-        return self:createErrorResponse(jsonRequest.id, -32600, "Invalid Request", 400)
+        return self:createErrorResponse(jsonRequest.id, INVALID_REQUEST, "Invalid Request", 400)
     end
 
-    -- Route request to appropriate handler
     local method = jsonRequest.method
     local id = jsonRequest.id
     local params = jsonRequest.params
-
     -- rapidjson decodes JSON null as a sentinel; treat it as absent
     if id == rapidjson.null then id = nil end
     if params == rapidjson.null then params = nil end
@@ -137,35 +171,57 @@ function MCPProtocol:handleRequest(request)
     -- JSON-RPC: method is a string, id a string or number, params structured
     if (method ~= nil and type(method) ~= "string")
         or (id ~= nil and type(id) ~= "string" and type(id) ~= "number")
-        or (params ~= nil and type(params) ~= "table") then
+        or (params ~= nil and not isJsonObject(params)) then
         local reply_id = (type(id) == "string" or type(id) == "number") and id or nil
-        return self:createErrorResponse(reply_id, -32600, "Invalid Request", 400)
+        return self:createErrorResponse(reply_id, INVALID_REQUEST, "Invalid Request", 400)
     end
     params = params or {}
 
+    -- HTTP allows optional whitespace around header values
+    local headers = {}
+    for k, v in pairs(request.headers or {}) do
+        headers[k] = type(v) == "string" and v:match("^[ \t]*(.-)[ \t]*$") or v
+    end
+    local header_version = headers["mcp-protocol-version"]
+    local meta = type(params._meta) == "table" and params._meta or {}
+
     logger.dbg("MCP Request:", method, "ID:", id)
 
-    -- Reject protocol versions we don't speak. Clients send MCP-Protocol-Version
-    -- on every request after initialization (MCP 2025-06-18+). A client that
-    -- also speaks stateless MCP (2026-07-28+) tries that first; this plain 400
-    -- (deliberately not a 2026-07-28 error code) makes it fall back to the
-    -- initialize handshake, which is exempt from the check.
-    local headers = request.headers or {}
-    local header_version = headers["mcp-protocol-version"]
-    if header_version and method ~= "initialize" and not isSupportedVersion(header_version) then
-        return self:createErrorResponse(id, -32600,
-            "Unsupported protocol version: " .. header_version ..
-            " (supported: " .. table.concat(SUPPORTED_VERSIONS, ", ") .. ")",
-            400, { supported = SUPPORTED_VERSIONS, requested = header_version })
+    -- A request carrying per-request metadata, or announcing a stateless
+    -- version, is served by the 2026-07-28 rules. initialize always means a
+    -- legacy client (or a dual-era client falling back to the handshake).
+    if meta[META_PROTOCOL_VERSION] ~= nil
+        or (method ~= "initialize" and contains(MODERN_VERSIONS, header_version)) then
+        return self:handleModernMessage(jsonRequest, method, id, params, meta, headers)
     end
 
-    -- A JSON-RPC response from the client (to a server-initiated request)
+    return self:handleLegacyMessage(jsonRequest, method, id, params, headers)
+end
+
+--------------------------------------------------------------------------------
+-- Legacy (initialize-based) protocol: 2025-03-26 .. 2025-11-25
+--------------------------------------------------------------------------------
+
+function MCPProtocol:handleLegacyMessage(jsonRequest, method, id, params, headers)
+    -- Reject protocol versions we don't speak. Clients send MCP-Protocol-Version
+    -- on every request after initialization (2025-06-18+). initialize itself
+    -- is exempt: it carries its version in the body and is negotiated.
+    local header_version = headers["mcp-protocol-version"]
+    if header_version and method ~= "initialize" and not contains(LEGACY_VERSIONS, header_version) then
+        return self:createErrorResponse(id, INVALID_REQUEST,
+            "Unsupported protocol version: " .. header_version ..
+            " (supported: " .. table.concat(ALL_VERSIONS, ", ") .. ")",
+            400, { supported = ALL_VERSIONS, requested = header_version })
+    end
+
+    -- A JSON-RPC response from the client: this server sends no requests,
+    -- so there is nothing to match it to
     if method == nil then
         if id ~= nil and (jsonRequest.result ~= nil or jsonRequest.error ~= nil) then
-            self:handleClientResponse(jsonRequest)
+            logger.dbg("MCP: Ignoring unexpected client response", id)
             return self:createAcceptedResponse()
         end
-        return self:createErrorResponse(id, -32600, "Invalid Request", 400)
+        return self:createErrorResponse(id, INVALID_REQUEST, "Invalid Request", 400)
     end
 
     -- Notifications (no id) never get a JSON-RPC response: HTTP 202 Accepted
@@ -177,68 +233,43 @@ function MCPProtocol:handleRequest(request)
         return self:createAcceptedResponse()
     end
 
-    -- Version this request speaks. Clients on 2025-06-18+ send the header on
-    -- every request; a missing one means 2025-03-26 (per spec). Not the version
-    -- initialize negotiated: one protocol instance serves every client.
-    local request_version = header_version or "2025-03-26"
-
-    -- Handle different MCP methods
     if method == "initialize" then
         return self:handleInitialize(id, params)
     elseif method == "ping" then
-        return self:handlePing(id)
-    elseif method == "logging/setLevel" then
-        return self:handleLoggingSetLevel(id, params)
-    elseif method == "resources/list" then
-        return self:handleResourcesList(id, params)
-    elseif method == "resources/read" then
-        return self:handleResourcesRead(id, params)
-    elseif method == "resources/templates/list" then
-        return self:handleResourcesTemplatesList(id, params)
-    elseif method == "resources/subscribe" then
-        return self:handleResourcesSubscribe(id, params)
-    elseif method == "resources/unsubscribe" then
-        return self:handleResourcesUnsubscribe(id, params)
-    elseif method == "tools/list" then
-        return self:handleToolsList(id, params)
-    elseif method == "tools/call" then
-        return self:handleToolsCall(id, params, request_version)
-    elseif method == "prompts/list" then
-        return self:handlePromptsList(id, params)
-    elseif method == "prompts/get" then
-        return self:handlePromptsGet(id, params)
-    else
-        return self:createErrorResponse(id, -32601, "Method not found")
+        return self:createSuccessResponse(id, {})
+    elseif method == "resources/subscribe" or method == "resources/unsubscribe" then
+        return self:respond(id, self:resourcesSubscription(method, params))
     end
+
+    -- Version this request speaks. Clients on 2025-06-18+ send the header on
+    -- every request; a missing one means 2025-03-26 (per spec). Not the version
+    -- initialize negotiated: one protocol instance serves every client.
+    local version = header_version or "2025-03-26"
+    local result, err = self:dispatch(method, params, { modern = false, version = version })
+    if result == nil and err == nil then
+        return self:createErrorResponse(id, METHOD_NOT_FOUND, "Method not found")
+    end
+    return self:respond(id, result, err)
 end
 
 function MCPProtocol:handleInitialize(id, params)
     logger.info("MCP Initialize request from:", params.clientInfo and params.clientInfo.name or "unknown")
 
-    -- Store client capabilities for client features
-    if self.clientFeatures and params.capabilities then
-        self.clientFeatures:setClientCapabilities(params.capabilities)
-        logger.dbg("MCP: Client capabilities:", rapidjson.encode(params.capabilities))
-    end
-
     -- Version negotiation: answer with the client's version if we support it,
     -- otherwise with our latest (the client then decides whether to proceed)
     local requested = params.protocolVersion
-    local negotiated = isSupportedVersion(requested) and requested or self.version
+    local negotiated = contains(LEGACY_VERSIONS, requested) and requested or self.version
     if requested ~= negotiated then
         logger.info("MCP: Client requested protocol", requested, "- offering", negotiated)
     end
     self.negotiatedVersion = negotiated
 
-    local result = {
+    return self:createSuccessResponse(id, {
         protocolVersion = negotiated,
         capabilities = self.capabilities,
         serverInfo = self.serverInfo,
-        instructions = "Access to the book the user is reading in KOReader on their e-reader. "
-            .. "Start with get_reading_context to see the current book, page and selection.",
-    }
-
-    return self:createSuccessResponse(id, result)
+        instructions = INSTRUCTIONS,
+    })
 end
 
 -- Handle a client notification (no response is sent)
@@ -249,151 +280,182 @@ function MCPProtocol:handleNotification(method, params)
         -- Requests are handled synchronously, so there is nothing to cancel
         logger.dbg("MCP: Client cancelled request", params and params.requestId)
     else
-        self:handleClientNotification({ method = method, params = params })
+        logger.dbg("MCP: Ignoring notification", method)
     end
 end
 
-function MCPProtocol:handlePing(id)
-    return self:createSuccessResponse(id, {})
+function MCPProtocol:resourcesSubscription(method, params)
+    if not self.resources then
+        return nil, { code = INTERNAL_ERROR, message = "Resources not available" }
+    end
+    if not params.uri then
+        return nil, { code = INVALID_PARAMS, message = "Invalid params: missing uri" }
+    end
+    local ok, err = pcall(function()
+        if method == "resources/subscribe" then
+            self.resources:subscribe(params.uri)
+        else
+            self.resources:unsubscribe(params.uri)
+        end
+    end)
+    if not ok then
+        logger.err("Error updating resource subscription:", err)
+        return nil, { code = INTERNAL_ERROR, message = "Internal error" }
+    end
+    return {}
 end
 
-function MCPProtocol:handleLoggingSetLevel(id, params)
-    local level = params.level
-    if not level then
-        return self:createErrorResponse(id, -32602, "Invalid params: missing level")
+--------------------------------------------------------------------------------
+-- Modern (stateless) protocol: 2026-07-28
+--------------------------------------------------------------------------------
+
+function MCPProtocol:handleModernMessage(jsonRequest, method, id, params, meta, headers)
+    -- Clients send only requests (and, on stdio, cancellations) in this revision
+    if method == nil then
+        return self:createErrorResponse(id, INVALID_REQUEST, "Invalid Request: clients must not send responses", 400)
+    end
+    if id == nil then
+        logger.dbg("MCP: Ignoring notification", method)
+        return self:createAcceptedResponse()
     end
 
-    if self.clientFeatures then
-        local ok, err = self.clientFeatures:setLogLevel(level)
-        if not ok then
-            return self:createErrorResponse(id, -32602, err)
+    -- Version: required in _meta, and must be one we speak
+    local version = meta[META_PROTOCOL_VERSION]
+    if type(version) ~= "string" then
+        return self:createErrorResponse(id, INVALID_PARAMS,
+            "Invalid params: _meta is missing " .. META_PROTOCOL_VERSION, 400)
+    end
+    -- A header that disagrees with the body is a mismatch, whatever the version
+    local header_version = headers["mcp-protocol-version"]
+    if header_version ~= nil and header_version ~= version then
+        return self:createErrorResponse(id, HEADER_MISMATCH,
+            "Header mismatch: MCP-Protocol-Version header value '" .. header_version
+            .. "' does not match body value '" .. version .. "'", 400)
+    end
+    if not contains(MODERN_VERSIONS, version) then
+        return self:createErrorResponse(id, UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version", 400,
+            { supported = ALL_VERSIONS, requested = version })
+    end
+    if type(meta[META_CLIENT_CAPABILITIES]) ~= "table" then
+        return self:createErrorResponse(id, INVALID_PARAMS,
+            "Invalid params: _meta is missing " .. META_CLIENT_CAPABILITIES, 400)
+    end
+
+    -- Streamable HTTP mirrors body fields into headers; they must agree
+    local mismatch = self:checkMirroredHeaders(method, params, version, headers)
+    if mismatch then
+        return self:createErrorResponse(id, HEADER_MISMATCH, mismatch, 400)
+    end
+
+    local client_info = meta[META_CLIENT_INFO]
+    if type(client_info) == "table" and client_info.name then
+        logger.dbg("MCP: Request from", client_info.name, client_info.version)
+    end
+
+    local ctx = {
+        modern = true,
+        clientCapabilities = meta[META_CLIENT_CAPABILITIES],
+        inputResponses = type(params.inputResponses) == "table" and params.inputResponses or nil,
+    }
+
+    -- A retry's requestState must be one we issued for this exact call, and
+    -- still valid; anything else is rejected before the tool runs
+    if params.requestState ~= nil and params.requestState ~= rapidjson.null then
+        if method ~= "tools/call" then
+            return self:createErrorResponse(id, INVALID_PARAMS, "Invalid params: unexpected requestState", 400)
+        end
+        local arguments = params.arguments
+        if arguments == rapidjson.null then arguments = nil end
+        local state, state_err = MRTR.decodeState(params.requestState,
+            MRTR.callDigest("tools/call", params.name, arguments))
+        if not state then
+            return self:createErrorResponse(id, INVALID_PARAMS, "Invalid params: " .. state_err, 400)
+        end
+        ctx.state = state
+    end
+
+    local result, err, cache
+    if method == "server/discover" then
+        result, cache = {
+            supportedVersions = ALL_VERSIONS,
+            capabilities = self:modernCapabilities(),
+            instructions = INSTRUCTIONS,
+        }, CACHE_STATIC
+    else
+        result, err, cache = self:dispatch(method, params, ctx)
+        if result == nil and err == nil then
+            -- Removed in 2026-07-28 (ping, logging/setLevel, resources/subscribe,
+            -- initialize) or never implemented
+            return self:createErrorResponse(id, METHOD_NOT_FOUND, "Method not found: " .. tostring(method), 404)
         end
     end
 
-    return self:createSuccessResponse(id, {})
+    if err then
+        return self:respond(id, nil, err)
+    end
+
+    result.resultType = result.resultType or "complete"
+    result._meta = result._meta or {}
+    result._meta[META_SERVER_INFO] = self.serverInfo
+    -- Interim input_required results aren't cacheable
+    if cache and result.resultType == "complete" then
+        result.ttlMs = cache.ttlMs
+        result.cacheScope = cache.cacheScope
+    end
+    return self:createSuccessResponse(id, result)
 end
 
-function MCPProtocol:handleResourcesList(id, params)
-    if not self.resources then
-        return self:createErrorResponse(id, -32603, "Resources not available")
+-- @return an error message, or nil if the headers match the body
+function MCPProtocol:checkMirroredHeaders(method, params, version, headers)
+    local header_version = headers["mcp-protocol-version"]
+    if header_version == nil then
+        return "Header mismatch: MCP-Protocol-Version header is missing"
+    elseif header_version ~= version then
+        return "Header mismatch: MCP-Protocol-Version header value '" .. header_version
+            .. "' does not match body value '" .. version .. "'"
     end
 
-    local ok, result = pcall(function()
-        return self.resources:list()
-    end)
-
-    if not ok then
-        logger.err("Error listing resources:", result)
-        return self:createErrorResponse(id, -32603, "Internal error")
+    local header_method = headers["mcp-method"]
+    if header_method == nil then
+        return "Header mismatch: Mcp-Method header is missing"
+    elseif header_method ~= method then
+        return "Header mismatch: Mcp-Method header value '" .. header_method
+            .. "' does not match body value '" .. tostring(method) .. "'"
     end
 
-    return self:createSuccessResponse(id, { resources = result })
+    local name_field = MCP_NAME_SOURCE[method]
+    if name_field then
+        local raw = headers["mcp-name"]
+        if raw == nil then
+            return "Header mismatch: Mcp-Name header is missing"
+        end
+        local decoded = MRTR.decodeHeaderValue(raw)
+        if decoded == nil then
+            return "Header mismatch: Mcp-Name header has invalid Base64 encoding"
+        elseif decoded ~= params[name_field] then
+            return "Header mismatch: Mcp-Name header does not match params." .. name_field
+        end
+    end
+    return nil
 end
 
-function MCPProtocol:handleResourcesRead(id, params)
-    if not self.resources then
-        return self:createErrorResponse(id, -32603, "Resources not available")
-    end
-
-    local uri = params.uri
-    if not uri then
-        return self:createErrorResponse(id, -32602, "Invalid params: missing uri")
-    end
-
-    local ok, result = pcall(function()
-        return self.resources:read(uri)
-    end)
-
-    if not ok then
-        logger.err("Error reading resource:", result)
-        return self:createErrorResponse(id, -32603, "Internal error")
-    end
-
-    if not result then
-        return self:createErrorResponse(id, -32602, "Resource not found")
-    end
-
-    return self:createSuccessResponse(id, { contents = result })
+-- Capabilities as advertised to stateless clients
+function MCPProtocol:modernCapabilities()
+    local caps = {}
+    if self.capabilities.tools then caps.tools = {} end
+    if self.capabilities.prompts then caps.prompts = {} end
+    if self.capabilities.resources then caps.resources = {} end
+    return caps
 end
 
-function MCPProtocol:handleResourcesTemplatesList(id, params)
-    if not self.resources then
-        return self:createErrorResponse(id, -32603, "Resources not available")
-    end
+--------------------------------------------------------------------------------
+-- Shared method implementations
+--------------------------------------------------------------------------------
 
-    local ok, result = pcall(function()
-        return self.resources:listTemplates()
-    end)
-
-    if not ok then
-        logger.err("Error listing resource templates:", result)
-        return self:createErrorResponse(id, -32603, "Internal error")
-    end
-
-    return self:createSuccessResponse(id, { resourceTemplates = result or {} })
-end
-
-function MCPProtocol:handleResourcesSubscribe(id, params)
-    if not self.resources then
-        return self:createErrorResponse(id, -32603, "Resources not available")
-    end
-
-    local uri = params.uri
-    if not uri then
-        return self:createErrorResponse(id, -32602, "Invalid params: missing uri")
-    end
-
-    local ok, result = pcall(function()
-        return self.resources:subscribe(uri)
-    end)
-
-    if not ok then
-        logger.err("Error subscribing to resource:", result)
-        return self:createErrorResponse(id, -32603, "Internal error")
-    end
-
-    return self:createSuccessResponse(id, {})
-end
-
-function MCPProtocol:handleResourcesUnsubscribe(id, params)
-    if not self.resources then
-        return self:createErrorResponse(id, -32603, "Resources not available")
-    end
-
-    local uri = params.uri
-    if not uri then
-        return self:createErrorResponse(id, -32602, "Invalid params: missing uri")
-    end
-
-    local ok, result = pcall(function()
-        return self.resources:unsubscribe(uri)
-    end)
-
-    if not ok then
-        logger.err("Error unsubscribing from resource:", result)
-        return self:createErrorResponse(id, -32603, "Internal error")
-    end
-
-    return self:createSuccessResponse(id, {})
-end
-
-function MCPProtocol:handleToolsList(id, params)
-    if not self.tools then
-        return self:createErrorResponse(id, -32603, "Tools not available")
-    end
-
-    local ok, result = pcall(function()
-        return self.tools:list()
-    end)
-
-    if not ok then
-        logger.err("Error listing tools:", result)
-        return self:createErrorResponse(id, -32603, "Internal error")
-    end
-
-    return self:createSuccessResponse(id, { tools = result })
-end
-
+-- Run a server method.
+-- @param ctx table: { modern, clientCapabilities, inputResponses, state (verified requestState) }
+-- @return result, error ({code, message}), cache hint; or nothing if the
+--         method is unknown
 -- resource_link content was added in 2025-06-18; older clients reject it,
 -- so give them the link as text instead
 local function adaptToolResult(result, version)
@@ -411,79 +473,119 @@ local function adaptToolResult(result, version)
     return result
 end
 
-function MCPProtocol:handleToolsCall(id, params, version)
-    if not self.tools then
-        return self:createErrorResponse(id, -32603, "Tools not available")
+function MCPProtocol:dispatch(method, params, ctx)
+    if method == "tools/list" then
+        if not self.tools then return nil, { code = INTERNAL_ERROR, message = "Tools not available" } end
+        return self:safely("listing tools", function()
+            return { tools = self.tools:list() }
+        end, CACHE_STATIC)
+
+    elseif method == "tools/call" then
+        if not self.tools then return nil, { code = INTERNAL_ERROR, message = "Tools not available" } end
+        if not params.name then
+            return nil, { code = INVALID_PARAMS, message = "Invalid params: missing name" }
+        end
+        local arguments = params.arguments
+        if arguments == rapidjson.null then arguments = nil end
+        if arguments ~= nil and not isJsonObject(arguments) then
+            return nil, { code = INVALID_PARAMS, message = "Invalid params: arguments must be an object" }
+        end
+        arguments = arguments or {}
+        local ok, result = pcall(function()
+            return self.tools:call(params.name, arguments, ctx)
+        end)
+        if not ok then
+            -- Tool execution errors are results the model can see, not protocol errors
+            logger.err("Error calling tool:", result)
+            return {
+                content = { { type = "text", text = "Error: " .. tostring(result) } },
+                isError = true,
+            }
+        end
+        if not result then
+            return nil, { code = INVALID_PARAMS, message = "Unknown tool: " .. tostring(params.name) }
+        end
+        return adaptToolResult(result, ctx and ctx.version)
+
+    elseif method == "resources/list" then
+        if not self.resources then return nil, { code = INTERNAL_ERROR, message = "Resources not available" } end
+        return self:safely("listing resources", function()
+            return { resources = self.resources:list() }
+        end, CACHE_LIVE)
+
+    elseif method == "resources/templates/list" then
+        if not self.resources then return nil, { code = INTERNAL_ERROR, message = "Resources not available" } end
+        return self:safely("listing resource templates", function()
+            return { resourceTemplates = self.resources:listTemplates() or {} }
+        end, CACHE_STATIC)
+
+    elseif method == "resources/read" then
+        if not self.resources then return nil, { code = INTERNAL_ERROR, message = "Resources not available" } end
+        if not params.uri then
+            return nil, { code = INVALID_PARAMS, message = "Invalid params: missing uri" }
+        end
+        local result, err = self:safely("reading resource", function()
+            return self.resources:read(params.uri)
+        end)
+        if err then return nil, err end
+        if not result then
+            return nil, { code = INVALID_PARAMS, message = "Resource not found: " .. tostring(params.uri) }
+        end
+        return { contents = result }, nil, CACHE_LIVE
+
+    elseif method == "prompts/list" then
+        if not self.prompts then return nil, { code = INTERNAL_ERROR, message = "Prompts not available" } end
+        return self:safely("listing prompts", function()
+            return { prompts = self.prompts:list() }
+        end, CACHE_STATIC)
+
+    elseif method == "prompts/get" then
+        if not self.prompts then return nil, { code = INTERNAL_ERROR, message = "Prompts not available" } end
+        if not params.name then
+            return nil, { code = INVALID_PARAMS, message = "Invalid params: missing name" }
+        end
+        local arguments = params.arguments
+        if arguments == rapidjson.null then arguments = nil end
+        if arguments ~= nil and not isJsonObject(arguments) then
+            return nil, { code = INVALID_PARAMS, message = "Invalid params: arguments must be an object" }
+        end
+        arguments = arguments or {}
+        local ok, result, prompt_err = pcall(function()
+            return self.prompts:get(params.name, arguments)
+        end)
+        if not ok then
+            logger.err("Error getting prompt:", result)
+            return nil, { code = INTERNAL_ERROR, message = "Internal error" }
+        end
+        if not result then
+            return nil, { code = INVALID_PARAMS, message = prompt_err or "Prompt not found" }
+        end
+        return result
     end
-
-    local name = params.name
-    local arguments = params.arguments or {}
-
-    if not name then
-        return self:createErrorResponse(id, -32602, "Invalid params: missing name")
-    end
-
-    local ok, result = pcall(function()
-        return self.tools:call(name, arguments)
-    end)
-
-    if not ok then
-        logger.err("Error calling tool:", result)
-        return self:createErrorResponse(id, -32603, tostring(result))
-    end
-
-    if not result then
-        return self:createErrorResponse(id, -32602, "Tool not found")
-    end
-
-    return self:createSuccessResponse(id, adaptToolResult(result, version))
+    -- unknown method: return nothing
 end
 
-function MCPProtocol:handlePromptsList(id, params)
-    if not self.prompts then
-        return self:createErrorResponse(id, -32603, "Prompts not available")
-    end
-
-    local ok, result = pcall(function()
-        return self.prompts:list()
-    end)
-
+-- Run fn under pcall; map failures to an internal error
+function MCPProtocol:safely(what, fn, cache)
+    local ok, result = pcall(fn)
     if not ok then
-        logger.err("Error listing prompts:", result)
-        return self:createErrorResponse(id, -32603, "Internal error")
+        logger.err("Error " .. what .. ":", result)
+        return nil, { code = INTERNAL_ERROR, message = "Internal error" }
     end
-
-    return self:createSuccessResponse(id, { prompts = result })
+    return result, nil, cache
 end
 
-function MCPProtocol:handlePromptsGet(id, params)
-    if not self.prompts then
-        return self:createErrorResponse(id, -32603, "Prompts not available")
+-- Turn a dispatch outcome into an HTTP response
+function MCPProtocol:respond(id, result, err)
+    if err then
+        return self:createErrorResponse(id, err.code, err.message, err.http_status, err.data)
     end
-
-    local name = params.name
-    local arguments = params.arguments or {}
-
-    if not name then
-        return self:createErrorResponse(id, -32602, "Invalid params: missing name")
-    end
-
-    local ok, result, err = pcall(function()
-        return self.prompts:get(name, arguments)
-    end)
-
-    if not ok then
-        logger.err("Error getting prompt:", result)
-        return self:createErrorResponse(id, -32603, "Internal error")
-    end
-
-    if not result then
-        -- result is nil, err contains the error message from prompts:get
-        return self:createErrorResponse(id, -32602, err or "Prompt not found")
-    end
-
     return self:createSuccessResponse(id, result)
 end
+
+--------------------------------------------------------------------------------
+-- Responses
+--------------------------------------------------------------------------------
 
 function MCPProtocol:createSuccessResponse(id, result)
     local response = {
@@ -538,117 +640,6 @@ function MCPProtocol:createAcceptedResponse()
         headers = {},
         body = "",
     }
-end
-
--- Kept for compatibility with older callers
-function MCPProtocol:createNotificationResponse()
-    return self:createAcceptedResponse()
-end
-
---------------------------------------------------------------------------------
--- Server → Client Notifications
---------------------------------------------------------------------------------
-
--- Send a resource update notification
-function MCPProtocol:notifyResourceUpdated(uri)
-    if self.clientFeatures then
-        self.clientFeatures:notifyResourceUpdated(uri)
-    end
-end
-
--- Send a resource list changed notification
-function MCPProtocol:notifyResourceListChanged()
-    if self.clientFeatures then
-        self.clientFeatures:notifyResourceListChanged()
-    end
-end
-
--- Send a progress notification
-function MCPProtocol:notifyProgress(progressToken, progress, total, message)
-    if self.clientFeatures then
-        self.clientFeatures:notifyProgress(progressToken, progress, total, message)
-    end
-end
-
--- Log a message to the client
-function MCPProtocol:log(level, loggerName, data)
-    if self.clientFeatures then
-        self.clientFeatures:log(level, loggerName, data)
-    end
-end
-
---------------------------------------------------------------------------------
--- Server → Client Requests (via clientFeatures)
---------------------------------------------------------------------------------
-
--- Request sampling from the client
-function MCPProtocol:requestSampling(options, callback)
-    if self.clientFeatures then
-        return self.clientFeatures:requestSampling(options, callback)
-    else
-        if callback then callback(nil, "Client features not available") end
-    end
-end
-
--- Simple ask helper
-function MCPProtocol:ask(prompt, callback)
-    if self.clientFeatures then
-        return self.clientFeatures:ask(prompt, callback)
-    else
-        if callback then callback(nil, "Client features not available") end
-    end
-end
-
--- Request form elicitation
-function MCPProtocol:requestFormElicitation(options, callback)
-    if self.clientFeatures then
-        return self.clientFeatures:requestFormElicitation(options, callback)
-    else
-        if callback then callback(nil, "Client features not available") end
-    end
-end
-
--- Request user confirmation
-function MCPProtocol:confirm(message, callback)
-    if self.clientFeatures then
-        return self.clientFeatures:confirm(message, callback)
-    else
-        if callback then callback(false, "Client features not available") end
-    end
-end
-
--- Request text input
-function MCPProtocol:requestText(message, options, callback)
-    if self.clientFeatures then
-        return self.clientFeatures:requestText(message, options, callback)
-    else
-        if callback then callback(nil, "Client features not available") end
-    end
-end
-
--- Request choice from options
-function MCPProtocol:requestChoice(message, options, callback)
-    if self.clientFeatures then
-        return self.clientFeatures:requestChoice(message, options, callback)
-    else
-        if callback then callback(nil, "Client features not available") end
-    end
-end
-
--- Handle response from client (for pending sampling/elicitation requests)
-function MCPProtocol:handleClientResponse(response)
-    if self.clientFeatures then
-        return self.clientFeatures:handleResponse(response)
-    end
-    return false
-end
-
--- Handle notification from client
-function MCPProtocol:handleClientNotification(notification)
-    if self.clientFeatures then
-        return self.clientFeatures:handleNotification(notification)
-    end
-    return false
 end
 
 return MCPProtocol

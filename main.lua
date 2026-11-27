@@ -31,7 +31,6 @@ local MCPResources = require("mcp_resources")
 local MCPTools = require("mcp_tools")
 local MCPPrompts = require("mcp_prompts")
 local MCPRelay = require("mcp_relay")
-local MCPClientFeatures = require("mcp_client_features")
 
 -- Module-level state to persist across plugin instance recreation
 -- (when switching between file browser and reader)
@@ -42,7 +41,6 @@ local shared_state = {
     tools = nil,          -- shared tools instance
     prompts = nil,        -- shared prompts instance
     relay = nil,          -- shared relay instance
-    clientFeatures = nil, -- shared client features (sampling, elicitation, logging)
     -- MCP server state (for UI - true when MCP is active in any mode)
     server_running = false,
     -- Internal state for cleanup
@@ -80,25 +78,19 @@ function MCP:init()
         shared_state.tools = MCPTools:new()
         shared_state.prompts = MCPPrompts:new()
         shared_state.relay = MCPRelay:new()
-        shared_state.clientFeatures = MCPClientFeatures:new()
 
         -- Wire up components
         shared_state.protocol:setResources(shared_state.resources)
         shared_state.protocol:setTools(shared_state.tools)
         shared_state.protocol:setPrompts(shared_state.prompts)
-        shared_state.protocol:setClientFeatures(shared_state.clientFeatures)
         shared_state.tools:setResources(shared_state.resources)
         shared_state.prompts:setResources(shared_state.resources)
 
-        -- Set up resource notification callback
+        -- Resource change tracking stays wired up for a future
+        -- subscriptions/listen stream (MCP 2026-07-28); nothing can deliver
+        -- change notifications to clients yet.
         shared_state.resources:setNotifyCallback(function(notification_type, uri)
-            if shared_state.clientFeatures then
-                if notification_type == "updated" then
-                    shared_state.clientFeatures:notifyResourceUpdated(uri)
-                elseif notification_type == "list_changed" then
-                    shared_state.clientFeatures:notifyResourceListChanged()
-                end
-            end
+            logger.dbg("MCP: Resource change", notification_type, uri)
         end)
 
         -- Configure relay
@@ -794,8 +786,6 @@ function MCP:stopServer()
     -- Mark MCP server as stopped
     shared_state.server_running = false
 
-    -- Clear send callback
-    shared_state.protocol:setSendCallback(nil)
 
     -- Stop idle checking
     self:cancelIdleCheck()
@@ -881,38 +871,12 @@ function MCP:startRelay(show_notification)
         return shared_state.protocol:handleRequest(request)
     end)
 
-    -- Set up the send callback for client features (notifications, sampling, etc.)
-    local function sendToClient(message)
-        if shared_state.relay_running and shared_state.relay_connected then
-            -- Check if it's a notification or request
-            if message.id then
-                -- It's a request (has id), use sendRequest
-                shared_state.relay:sendRequest(message, function(response, err)
-                    if response then
-                        -- Handle response via clientFeatures
-                        if shared_state.clientFeatures then
-                            shared_state.clientFeatures:handleResponse(response)
-                        end
-                    else
-                        logger.warn("MCP: Server request failed:", err)
-                    end
-                end)
-            else
-                -- It's a notification (no id), use sendNotification
-                shared_state.relay:sendNotification(message)
-            end
-        end
-    end
-
-    shared_state.protocol:setSendCallback(sendToClient)
-
     local success, device_id = shared_state.relay:start()
     if success and shared_state.relay.halted then
         -- Stopped during start (onFatalError already told the user why).
         -- The shared flags were never set, so stop the relay client here;
         -- otherwise the next start would find it "already running".
         shared_state.relay:stop()
-        shared_state.protocol:setSendCallback(nil)
         return false
     end
     if success then
