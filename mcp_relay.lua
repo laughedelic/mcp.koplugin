@@ -30,6 +30,8 @@ local url = require("socket.url")
 local sha2 = require("ffi/sha2")
 local Device = require("device")
 
+local PLUGIN_VERSION = "0.3.0"
+
 local MCPRelay = {
     -- Configuration
     relay_url = "https://mcp-relay.laughedelic.workers.dev", -- Default relay URL
@@ -40,6 +42,7 @@ local MCPRelay = {
     -- OAuth credentials (device-generated)
     passcode = nil,       -- 6-digit passcode (generated locally, shown to user)
     passcode_hash = nil,  -- SHA-256 hash of passcode (sent to relay for storage)
+    device_secret = nil,  -- random secret that authenticates polling (sent once at registration)
     token_endpoint = nil, -- OAuth token endpoint URL
 
     -- State
@@ -61,6 +64,8 @@ local MCPRelay = {
     onRequest = nil,           -- function(request) -> response
     onStatusChange = nil,      -- function(connected, public_url)
     onFirstRegistration = nil, -- function(device_id, passcode, public_url) - called only on first registration with new passcode
+    onDeviceSecret = nil,      -- function(secret) - called when a new device secret is generated, to persist it
+    onAuthError = nil,         -- function(message) - called when the relay rejects this device's credentials
 
     -- Timing (tuned for battery/responsiveness balance)
     poll_interval_min = 0.5,    -- minimum seconds between polls (when active)
@@ -82,24 +87,71 @@ end
 
 -- Generate a device ID using the device type + 4-char suffix
 -- Example: "Kobo-a7b2" or "Kindle-px9c"
+-- Read n cryptographically secure random bytes.
+-- Uses /dev/urandom (available on every KOReader platform: Kindle, Kobo,
+-- PocketBook, Android, desktop Linux/macOS). Falls back to a hash of
+-- time and memory state only if it can't be opened.
+function MCPRelay:randomBytes(n)
+    local f = io.open("/dev/urandom", "rb")
+    if f then
+        local bytes = f:read(n)
+        f:close()
+        if bytes and #bytes == n then
+            return bytes
+        end
+    end
+    logger.warn("MCP Relay: /dev/urandom unavailable, using weak randomness")
+    local out = {}
+    local seed = tostring(os.time()) .. tostring(os.clock()) .. tostring({}) .. tostring(socket.gettime())
+    while #table.concat(out) < n do
+        seed = sha2.sha256(seed .. #out)
+        table.insert(out, (seed:gsub("..", function(h) return string.char(tonumber(h, 16)) end)))
+    end
+    return table.concat(out):sub(1, n)
+end
+
+-- Random integer in [0, max) without modulo bias
+function MCPRelay:randomInt(max)
+    while true do
+        local b = self:randomBytes(4)
+        local v = ((b:byte(1) * 256 + b:byte(2)) * 256 + b:byte(3)) * 256 + b:byte(4)
+        local limit = 4294967296 - (4294967296 % max)
+        if v < limit then
+            return v % max
+        end
+    end
+end
+
+-- Random string of `len` characters drawn from `alphabet`
+function MCPRelay:randomString(len, alphabet)
+    local out = {}
+    for i = 1, len do
+        local idx = self:randomInt(#alphabet) + 1
+        out[i] = alphabet:sub(idx, idx)
+    end
+    return table.concat(out)
+end
+
 function MCPRelay:generateDeviceId()
     local device_model = self:getDeviceTypeLabel()
 
-    -- Clean up the model name: remove spaces, special characters
-    local clean_model = device_model:gsub("[^%w%-_]", "")
-
-    -- Use os.time() with milliseconds from os.clock() for randomness
-    math.randomseed(os.time() + math.floor(os.clock() * 1000))
-
-    -- Generate 4-character suffix for uniqueness
-    local chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-    local suffix = ""
-    for _ = 1, 4 do
-        local idx = math.random(1, #chars)
-        suffix = suffix .. chars:sub(idx, idx)
+    -- Clean up the model name: keep letters and digits only (the relay accepts
+    -- [a-z0-9-], 6-24 chars), and keep it short enough for the suffix to fit
+    local clean_model = device_model:gsub("[^%w]", ""):sub(1, 15)
+    if clean_model == "" then
+        clean_model = "koreader"
     end
 
+    -- 8-character random suffix (36^8 ~ 2.8e12) so IDs can't be enumerated.
+    -- The device ID is not a secret, but it shouldn't be guessable either.
+    local suffix = self:randomString(8, "abcdefghijklmnopqrstuvwxyz0123456789")
+
     return (clean_model .. "-" .. suffix):lower()
+end
+
+-- Generate a random device secret (64 hex chars = 256 bits)
+function MCPRelay:generateDeviceSecret()
+    return (self:randomBytes(32):gsub(".", function(c) return string.format("%02x", c:byte()) end))
 end
 
 -- Get a generalized device type label (Kindle, Kobo, etc.) when possible
@@ -131,15 +183,7 @@ end
 
 -- Generate a random 6-digit numeric passcode
 function MCPRelay:generatePasscode()
-    -- Use os.time() with milliseconds from os.clock() for randomness
-    math.randomseed(os.time() + math.floor(os.clock() * 1000))
-
-    local passcode = ""
-    for _ = 1, 6 do
-        passcode = passcode .. tostring(math.random(0, 9))
-    end
-
-    return passcode
+    return self:randomString(6, "0123456789")
 end
 
 -- Hash a passcode using SHA-256 (returns hex string)
@@ -187,6 +231,15 @@ end
 -- Set the passcode hash directly (for restoring from saved settings)
 function MCPRelay:setPasscodeHash(hash)
     self.passcode_hash = hash
+end
+
+-- Set the device secret (restored from saved settings)
+function MCPRelay:setDeviceSecret(secret)
+    self.device_secret = secret
+end
+
+function MCPRelay:getDeviceSecret()
+    return self.device_secret
 end
 
 -- Get the passcode (only available during this session after generation)
@@ -265,7 +318,7 @@ end
 function MCPRelay:buildHttpRequest(method, parsed_url, body, extra_headers)
     local headers = {
         ["Host"] = parsed_url.host,
-        ["User-Agent"] = "KOReader-MCP-Plugin/1.0",
+        ["User-Agent"] = "KOReader-MCP-Plugin/" .. PLUGIN_VERSION,
         ["Accept"] = "application/json",
         ["Connection"] = "close",
     }
@@ -539,9 +592,13 @@ function MCPRelay:getDeviceHeaders()
     if not self.device_id then
         return {}
     end
-    return {
+    local headers = {
         ["X-Device-Id"] = self.device_id,
     }
+    if self.device_secret then
+        headers["Authorization"] = "Device " .. self.device_secret
+    end
+    return headers
 end
 
 -- Register with the relay server
@@ -570,13 +627,24 @@ function MCPRelay:register(callback)
         logger.info("MCP Relay: Generated new credentials for device:", self.device_id)
     end
 
+    -- Every device gets a secret that authenticates its polling. Devices
+    -- registered before secrets existed get one now; the relay accepts it
+    -- once, together with the matching passcode hash.
+    if not self.device_secret then
+        self.device_secret = self:generateDeviceSecret()
+        if self.onDeviceSecret then
+            self.onDeviceSecret(self.device_secret)
+        end
+    end
+
     local register_url = self.relay_url .. "/register"
 
     local payload_data = {
         deviceId = self.device_id,
         deviceName = self.device_name,
         passcodeHash = self.passcode_hash, -- Always send hash for verification
-        version = "2.0.0",
+        deviceSecret = self.device_secret,
+        version = PLUGIN_VERSION,
     }
 
     local payload = json.encode(payload_data)
@@ -593,6 +661,15 @@ function MCPRelay:register(callback)
         if not self.running then
             -- Relay was stopped while registering
             return
+        end
+
+        if response and response.code == 401 then
+            local ok_err, err_data = pcall(json.decode, response.body or "")
+            local message = ok_err and type(err_data) == "table" and err_data.error or "Credentials rejected"
+            logger.err("MCP Relay: Registration rejected by relay -", message)
+            if self.onAuthError then
+                self.onAuthError(message)
+            end
         end
 
         if not response or response.code ~= 200 then
@@ -692,6 +769,13 @@ function MCPRelay:pollForRequests()
             self.consecutive_empty_polls = self.consecutive_empty_polls + 1
             logger.dbg("MCP Relay: Poll returned 204 (no requests) in", string.format("%.2fs", poll_elapsed))
             self:scheduleNextPoll()
+            return
+        end
+
+        if status == 401 then
+            -- Device secret rejected: re-registering will tell us more
+            logger.warn("MCP Relay: Poll rejected (401) - re-registering")
+            self:handleDisconnect()
             return
         end
 

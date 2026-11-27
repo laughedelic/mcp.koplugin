@@ -13,12 +13,8 @@ The Model Context Protocol (MCP) is an open standard that enables AI assistants 
 - **Book Content Access**: AI assistants can read your current book's content at different scopes (current page, chapter, specific page ranges)
 - **Metadata Retrieval**: Access book metadata including title, author, reading progress, and statistics
 - **Interactive Tools**: Search within books, navigate to pages, get table of contents, add highlights and notes
-- **Resource Subscriptions**: Subscribe to resources and receive automatic notifications when they change (page turns, book changes)
-- **Client Features** (MCP 2025-03-26): 
-  - **Sampling**: Server can request LLM completions from the client
-  - **Elicitation**: Server can request user input (confirmations, text input, choices)
-  - **Logging**: Server can send log messages to the client
-- **Secure Local Network**: Server binds to your local network only
+- **MCP 2025-03-26 to 2025-11-25**: The server negotiates the protocol version with the client
+- **Local Network Protection**: Requests from web pages on other sites are rejected (Origin validation against DNS rebinding)
 - **Cloud Relay**: Access your e-reader from anywhere via a cloud relay
 
 ### Why not just use the [KOAssistant plugin](https://github.com/zeeyado/koassistant.koplugin)?
@@ -171,33 +167,9 @@ Prompts are pre-defined conversation starters for common reading companion inter
 | `translate` | Translate       | Translate text to another language                            |
 | `recommend` | Recommend Books | Get personalized book recommendations                         |
 
-### Server-Initiated Features (MCP 2025-03-26)
+### Server-Initiated Features (not available yet)
 
-The plugin supports advanced MCP features that enable the server to communicate back to the client:
-
-#### Resource Notifications
-
-When clients subscribe to resources (e.g., `book://current/page`), the server automatically sends notifications when:
-- The current page changes
-- The book changes (open/close)
-- Selected text changes
-
-This enables real-time awareness of what the user is reading.
-
-#### Logging
-
-The server can send log messages to the client at various levels:
-`debug`, `info`, `notice`, `warning`, `error`, `critical`, `alert`, `emergency`
-
-Clients can set the minimum log level via `logging/setLevel`.
-
-#### Sampling & Elicitation (Prepared for Future Use)
-
-The infrastructure is in place for server-initiated requests:
-- **Sampling**: Request LLM completions from the client
-- **Elicitation**: Request user confirmations, text input, or choices from forms
-
-These features require client support and are ready for when MCP clients implement them.
+The plugin contains groundwork for resource change notifications (page turns, book changes, selection), logging, sampling and elicitation (`mcp_client_features.lua`). Neither transport can deliver server-initiated messages yet: local mode has no SSE stream, and the cloud relay has no server-to-client channel. Until they can, the server doesn't advertise resource subscriptions, so clients don't wait for updates that never arrive.
 
 
 ## Local & Remote Modes
@@ -206,7 +178,7 @@ These features require client support and are ready for when MCP clients impleme
 
 In local mode, the MCP server runs on your e-reader and listens for connections on your local network (WiFi). This would be the default mode, but unfortunately some AI clients (most notably Claude Mobile) cannot connect to local network addresses and require a fully remote-accessible server.
 
-**Current limitations**: Server-initiated features (resource notifications, logging) are not yet available in local mode because HTTP is request/response only. These features work fully in remote mode via the cloud relay. See [PR #8](https://github.com/laughedelic/mcp.koplugin/pull/8) for work-in-progress on adding bidirectional communication via long-polling.
+The server accepts requests on `/` and `/mcp`. Requests carrying an `Origin` header are accepted only from `localhost` or the e-reader's own address, so a web page you open can't reach your library through your browser. Local mode has no authentication, so use it only on networks you trust.
 
 So for now this mode is kept for testing and limited use with compatible clients. I've tested it with GitHub Copilot with this configuration (replace `LOCAL_IP`):
 
@@ -265,6 +237,8 @@ The relay implementation is open source: [mcp-relay-cloudflare](https://github.c
 - **Audience validation**: Tokens are bound to your specific device
 - All traffic is encrypted (HTTPS)
 - The relay doesn't store any book content, only forwards authenticated requests
+- **Device secret**: Your e-reader also generates a random secret that authenticates its connection to the relay, so knowing your device ID is not enough to receive your requests. The relay never forwards your AI client's access token to the e-reader
+- **Brute-force protection**: The relay locks the login for your device after repeated wrong passcodes
 - You can reset your device ID and passcode anytime from the settings menu
 
 > [!WARNING]
