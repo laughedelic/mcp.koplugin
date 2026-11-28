@@ -246,7 +246,7 @@ graph LR
 
 #### Authentication Flow
 
-When you first start the MCP server in remote mode, you'll see the **relay URL** and a **pairing code**. To connect another app later, use **Connect an AI app** in the MCP settings menu (**Settings → Network → MCP server**). Each code works once, for 10 minutes.
+When you first start the MCP server in remote mode, you'll see the **relay URL** and a **pairing code**. To connect another app later, use **Connect an AI app** in the MCP settings menu (**Settings → Network → MCP server**). Each code works once, for 10 minutes. Once an app signs in, the reader closes the code and tells you which app connected.
 
 **Connected apps** in the same menu lists the AI apps that can reach your reader. Tap one to disconnect it.
 

@@ -67,6 +67,7 @@ local MCPRelay = {
     onDeviceSecret = nil,      -- function(secret) - called when a new device secret is generated, to persist it
     onFatalError = nil,        -- function(message) - the relay client stopped retrying (rejected credentials, no secure randomness, insecure URL)
     onWarning = nil,           -- function(message) - something the user should know, but the connection still works
+    onEvent = nil,             -- function(event) - a notice from the relay, e.g. {event = "app_connected", name = "Claude"}
 
     -- TLS: verify the relay's certificate chain and host name (setting
     -- mcp_relay_tls_verify = false turns this off, e.g. for a self-signed
@@ -1147,6 +1148,16 @@ function MCPRelay:handlePollResponse(response_body)
     -- Handle the request
     if request_data.type == "request" and request_data.requestId then
         self:handleRelayedRequest(request_data)
+    elseif request_data.type == "event" then
+        -- A notice from the relay (such as an AI app finishing sign-in); no reply expected
+        logger.info("MCP Relay: Event", request_data.event)
+        if self.onEvent then
+            local ok_event, err = pcall(self.onEvent, request_data)
+            if not ok_event then
+                logger.warn("MCP Relay: Event handler failed:", err)
+            end
+        end
+        self:scheduleNextPoll()
     elseif request_data.type == "ping" then
         -- Ping from server means connection is healthy, but no real request
         -- Don't count as "empty" since it's just a keep-alive

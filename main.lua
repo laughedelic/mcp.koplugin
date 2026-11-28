@@ -138,6 +138,20 @@ function MCP:init()
                 text = T(_("The cloud relay connection stopped:\n%1\n\nIf the relay rejected the credentials, reset the device ID in the MCP server settings (Settings → Network → MCP server) to register again."), message),
             })
         end
+        shared_state.relay.onEvent = function(event)
+            if event.event ~= "app_connected" then
+                return
+            end
+            -- The code is single use, so the pairing dialog has done its job
+            if shared_state.pairing_dialog then
+                UIManager:close(shared_state.pairing_dialog)
+                shared_state.pairing_dialog = nil
+            end
+            local name = type(event.name) == "string" and event.name ~= "" and event.name or _("An AI app")
+            UIManager:show(InfoMessage:new {
+                text = T(_("%1 is now connected to your reader.\n\nYou can disconnect it any time in MCP server → Connected apps."), name),
+            })
+        end
         shared_state.relay.onWarning = function(message)
             -- Each distinct warning once per run: every reconnect would repeat it
             shared_state.relay_warnings_shown = shared_state.relay_warnings_shown or {}
@@ -1283,11 +1297,15 @@ function MCP:showPairingCode()
         dialog = ButtonDialog:new {
             title = _("Connect an AI app"),
             width_factor = 0.9,
+            tap_close_callback = function()
+                shared_state.pairing_dialog = nil
+            end,
             buttons = {
                 {
                     {
                         text = _("New code"),
                         callback = function()
+                            shared_state.pairing_dialog = nil
                             UIManager:close(dialog)
                             mcp_self:showPairingCode()
                         end,
@@ -1295,6 +1313,7 @@ function MCP:showPairingCode()
                     {
                         text = _("Done"),
                         callback = function()
+                            shared_state.pairing_dialog = nil
                             UIManager:close(dialog)
                         end,
                     },
@@ -1302,6 +1321,10 @@ function MCP:showPairingCode()
             },
         }
         dialog:addWidget(content)
+        if shared_state.pairing_dialog then
+            UIManager:close(shared_state.pairing_dialog)
+        end
+        shared_state.pairing_dialog = dialog
         UIManager:show(dialog)
     end)
 end
