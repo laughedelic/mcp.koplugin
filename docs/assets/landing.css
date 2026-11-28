@@ -42,28 +42,91 @@
   width: min(100%, calc(var(--reader-w) + var(--phone-w) + 2rem));
   margin-inline: auto;
 }
-.demo-beats {
+/* The player: a pause button, and one bar per chapter that fills while it plays. */
+.demo-player {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-bottom: 0.9rem;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
 }
-.demo-beats button {
-  padding: 0.4rem 0.9rem;
+.demo-toggle {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
   border: 1.5px solid var(--ink);
-  border-radius: 2rem;
+  border-radius: 50%;
   background: none;
   color: var(--ink);
-  font: inherit;
-  font-size: 0.95rem;
   cursor: pointer;
 }
-.demo-beats button:hover {
+.demo-toggle[hidden] {
+  display: none;
+}
+.demo-toggle:hover {
   background: var(--panel);
 }
-.demo-beats button[aria-pressed="true"] {
-  background: var(--ink);
-  color: var(--paper);
+/* The icon is drawn from the state: two bars to pause, a triangle to play, an arrow to replay. */
+.demo-toggle::before {
+  content: "";
+  width: 0.6rem;
+  height: 0.7rem;
+  border-inline: 0.2rem solid currentColor;
+}
+.demo[data-state="paused"] .demo-toggle::before {
+  width: 0;
+  height: 0;
+  margin-left: 0.15rem;
+  border-block: 0.4rem solid transparent;
+  border-inline: 0.65rem solid currentColor;
+  border-inline-end-width: 0;
+}
+.demo[data-state="ended"] .demo-toggle::before {
+  content: "↻";
+  width: auto;
+  height: auto;
+  border: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1;
+}
+.demo-beats {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.demo-beats button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.92rem;
+  line-height: 1.25;
+  text-align: left;
+  cursor: pointer;
+}
+.demo-beats button:hover,
+.demo-beats button[aria-current="true"] {
+  color: var(--ink);
+}
+.demo-beats button[aria-current="true"] {
+  font-weight: 600;
+}
+.demo-beats i {
+  display: block;
+  height: 0.3rem;
+  margin-top: 0.4rem;
+  border-radius: 0.15rem;
+  background: linear-gradient(var(--ink), var(--ink)) no-repeat 0 0 / calc(var(--played, 0) * 100%) 100%, var(--rule);
 }
 .demo-caption {
   /* Two lines are reserved so the devices don't jump when the narration changes. */
@@ -398,12 +461,11 @@
 /* On a phone the two devices overlap, and the one in focus comes to the front,
    so the whole exchange fits on one screen. Tap either device to bring it forward. */
 @media (max-width: 46rem) {
-  .demo-beats {
-    gap: 0.35rem;
+  .demo-player {
+    gap: 0.6rem;
   }
   .demo-beats button {
-    padding: 0.3rem 0.7rem;
-    font-size: 0.85rem;
+    font-size: 0.82rem;
   }
   .demo-caption {
     font-size: 1.05rem;

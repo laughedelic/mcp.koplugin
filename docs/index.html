@@ -48,13 +48,17 @@
         data-wait="2000"             how long to stay on this step, in milliseconds
       When a step moves the focus to the reader, its page or mark changes a moment later,
       so the change is seen happening.
-      A step with an id is the start of a chapter; the buttons in .demo-beats jump to those ids.
+      A step with an id is the start of a chapter. Each button in .demo-beats jumps to one of
+      those ids, and its bar (the <i>) fills while that chapter plays.
     -->
     <section class="demo" data-demo data-focus="phone" aria-label="A walk-through of asking about a book from your phone">
-      <div class="demo-beats">
-        <button type="button" data-goto="beat-ask" aria-pressed="false">Ask about a passage</button>
-        <button type="button" data-goto="beat-note" aria-pressed="false">Save a note</button>
-        <button type="button" data-goto="beat-find" aria-pressed="false">Find a place</button>
+      <div class="demo-player">
+        <button type="button" class="demo-toggle" data-toggle aria-label="Play" hidden></button>
+        <ol class="demo-beats">
+          <li><button type="button" data-goto="beat-ask">Ask a question <i></i></button></li>
+          <li><button type="button" data-goto="beat-note">Save a note <i></i></button></li>
+          <li><button type="button" data-goto="beat-find">Find a place <i></i></button></li>
+        </ol>
       </div>
 
       <p class="demo-caption">
