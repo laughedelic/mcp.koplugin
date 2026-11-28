@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect width="128" height="128" rx="28" fill="#1f2937"/>
+  <!-- e-reader body -->
+  <rect x="30" y="18" width="68" height="92" rx="10" fill="#f9fafb"/>
+  <rect x="38" y="28" width="52" height="64" rx="3" fill="#e5e7eb"/>
+  <!-- text lines on the screen -->
+  <rect x="44" y="36" width="40" height="4" rx="2" fill="#6b7280"/>
+  <rect x="44" y="46" width="34" height="4" rx="2" fill="#6b7280"/>
+  <rect x="44" y="56" width="40" height="4" rx="2" fill="#6b7280"/>
+  <rect x="44" y="66" width="26" height="4" rx="2" fill="#6b7280"/>
+  <!-- home button -->
+  <rect x="56" y="98" width="16" height="4" rx="2" fill="#9ca3af"/>
+  <!-- spark: the AI connection -->
+  <path d="M96 66 L100.5 79.5 L114 84 L100.5 88.5 L96 102 L91.5 88.5 L78 84 L91.5 79.5 Z" fill="#f59e0b" stroke="#1f2937" stroke-width="3" stroke-linejoin="round"/>
+</svg>

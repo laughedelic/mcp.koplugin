@@ -272,6 +272,10 @@ The relay implementation is open source: [mcp-relay-cloudflare](https://github.c
 - **Device secret** (needs an up-to-date relay): Your e-reader also generates a random secret that authenticates its connection to the relay, so knowing your device ID is not enough to receive your requests. The relay never forwards your AI client's access token to the e-reader. An older self-hosted relay ignores the secret, lets anyone who knows the device ID poll, and forwards the client's `Authorization` header, so the plugin shows a warning when the relay doesn't confirm the secret
 - You can reset your device ID anytime from the settings menu
 
+#### Privacy
+
+See [PRIVACY.md](PRIVACY.md) for what the public relay stores and how to delete it.
+
 ## References
 
 - Built for [KOReader](https://github.com/koreader/koreader)
