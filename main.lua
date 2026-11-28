@@ -174,8 +174,11 @@ function MCP:init()
 
             MCP:refreshSettingsMenu(shared_state.settings_menu_instance)
 
-            if shared_state.suppress_first_registration_dialog then
-                shared_state.suppress_first_registration_dialog = false
+            -- Started from the menu: skip the legacy credentials popup, but
+            -- still show a pairing code, since that's the next step
+            local suppressed = shared_state.suppress_first_registration_dialog
+            shared_state.suppress_first_registration_dialog = false
+            if suppressed and not shared_state.relay.pairing_codes_supported then
                 return
             end
 
@@ -269,6 +272,8 @@ function MCP:addToMainMenu(menu_items)
 
     -- Settings sub-menu in Network section
     self.settings_menu_items = self.settings_menu_items or {}
+    -- Relay callbacks refresh the menu without an instance at hand
+    shared_state.menu_owner = self
     self:buildSettingsMenu(self.settings_menu_items)
     menu_items.mcp_settings = {
         text = _("MCP server"),
@@ -303,8 +308,9 @@ function MCP:refreshSettingsMenu(touchmenu_instance)
     if touchmenu_instance then
         shared_state.settings_menu_instance = touchmenu_instance
     end
-    if self.settings_menu_items then
-        self:buildSettingsMenu(self.settings_menu_items)
+    local owner = self.settings_menu_items and self or shared_state.menu_owner
+    if owner and owner.settings_menu_items then
+        owner:buildSettingsMenu(owner.settings_menu_items)
     end
     if touchmenu_instance then
         touchmenu_instance:updateItems()
@@ -1205,9 +1211,16 @@ function MCP:showPairingCode()
         return
     end
 
+    -- A second tap while a request is out would mint a code that replaces
+    -- the one about to be shown
+    if shared_state.pairing_code_requesting then
+        return
+    end
+    shared_state.pairing_code_requesting = true
     local waiting = InfoMessage:new { text = _("Getting a pairing code…") }
     UIManager:show(waiting)
     relay:requestPairingCode(function(ok, data)
+        shared_state.pairing_code_requesting = false
         UIManager:close(waiting)
         if not ok then
             UIManager:show(InfoMessage:new {

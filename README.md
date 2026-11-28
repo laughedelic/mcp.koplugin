@@ -256,13 +256,13 @@ The relay uses OAuth 2.1 Authorization Code flow with PKCE, so MCP clients that 
 > With an older or self-hosted relay that doesn't support pairing codes, the plugin shows a device ID and a permanent 6-digit passcode instead, which you enter on the sign-in page.
 
 > [!IMPORTANT]
-> The relay is just a bridge forwarding requests between your e-reader and AI clients. It does not store any book content or personal data.
+> The relay is just a bridge forwarding requests between your e-reader and AI clients. It does not store book content, highlights or notes; it keeps only what it needs to route and authorize requests (see the [privacy policy](PRIVACY.md)).
 
-The relay implementation is open source: [mcp-relay-cloudflare](https://github.com/laughedelic/mcp-relay-cloudflare). You can deploy your own instance for full control. By default, plugin uses the relay I deployed for myself. I'll be sharing it as long as it's within the free tier limits.
+The relay implementation is open source: [koreader-mcp-cloud-relay](https://github.com/laughedelic/koreader-mcp-cloud-relay). You can deploy your own instance for full control. By default, plugin uses the relay I deployed for myself. I'll be sharing it as long as it's within the free tier limits.
 
 #### Security
 
-- **One-time pairing codes**: A code works once and expires after 10 minutes; only your e-reader can request one (with its device secret), and the relay limits wrong guesses. Once you use pairing codes, the old permanent passcode stops working for new sign-ins
+- **One-time pairing codes**: A code works once and expires after 10 minutes; only your e-reader can request one (with its device secret), and the relay limits wrong guesses. Once the reader requests its first pairing code, the old permanent passcode stops working for new sign-ins
 - **OAuth 2.1 Authorization Code + PKCE**: MCP clients authenticate via the /authorize sign-in page, then exchange a code for a token
 - **Revocable**: Disconnect any AI app from **Connected apps** on the reader
 - **Short-lived tokens**: Access tokens expire in 1 hour

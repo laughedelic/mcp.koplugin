@@ -23,14 +23,19 @@ jobs:
           [ -n "$version" ] || { echo "No version in _meta.lua" >&2; exit 1; }
           jq --arg v "$version" '.version = $v' server.json > server.tmp && mv server.tmp server.json
           cat server.json
-      # The registry has no official action; its docs install the CLI from
-      # the latest release
+      # The registry has no official action. Pinned to a release and checked
+      # against its SHA-256 before it runs with the OIDC token; to upgrade,
+      # take both from the release's registry_<version>_checksums.txt
       - name: Install mcp-publisher
         env:
           GH_TOKEN: ${{ github.token }}
+          MCP_PUBLISHER_VERSION: v1.8.21
+          MCP_PUBLISHER_SHA256: ca2e5b24e8fc2718be4bb58ab086b39b7d60c79840c24b2057bc3f36d6ab2a59
         run: |
-          gh release download --repo modelcontextprotocol/registry \
-            --pattern 'mcp-publisher_linux_amd64.tar.gz' --output - | tar xz mcp-publisher
+          gh release download "$MCP_PUBLISHER_VERSION" --repo modelcontextprotocol/registry \
+            --pattern 'mcp-publisher_linux_amd64.tar.gz'
+          echo "$MCP_PUBLISHER_SHA256  mcp-publisher_linux_amd64.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher_linux_amd64.tar.gz mcp-publisher
       - name: Log in to the MCP Registry
         run: ./mcp-publisher login github-oidc
       - name: Publish

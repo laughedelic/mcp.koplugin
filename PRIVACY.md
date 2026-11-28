@@ -6,11 +6,11 @@ This policy covers the KOReader MCP plugin and the public cloud relay at `https:
 
 ## What the plugin does
 
-The plugin runs on your e-reader. It answers requests from the AI apps you connect: it reads the book you have open (text, metadata, table of contents, your highlights and notes), searches it, turns pages, and adds highlights or notes when you ask. It only acts on requests from apps you have paired, and only while the MCP server is running.
+The plugin runs on your e-reader. It answers requests from the AI apps you connect: it reads the book you have open (text, metadata, table of contents, your highlights and notes), searches it, turns pages, and adds highlights or notes when you ask. It only runs while the MCP server is on. Through the relay, it only acts on requests from apps you have paired. In local network mode there is no sign-in, so any device on your network that can reach the reader can send it requests.
 
 ## What passes through the relay
 
-Requests from your AI app and your e-reader's answers pass through the relay. These can contain book text, metadata, your highlights and notes, and whatever the AI app sends in its requests. The relay forwards them and **does not store them**. They exist in the relay's memory only while a request is in flight (at most about 30 seconds).
+Requests from your AI app and your e-reader's answers pass through the relay. These can contain book text, metadata, your highlights and notes, and whatever the AI app sends in its requests. The relay forwards them and **does not store them**. They exist in the relay's memory only while a request is in flight: an unanswered request is dropped after 30 seconds.
 
 ## What the relay stores
 
@@ -18,9 +18,9 @@ Requests from your AI app and your e-reader's answers pass through the relay. Th
 | --- | --- | --- |
 | Device ID (made from your device type plus random characters), device name ("KOReader" unless you change it), plugin version, first and last connection times | To route requests to your e-reader | Until you ask for it to be deleted |
 | SHA-256 hashes of your device secret and (for older plugins) your passcode | To authenticate your e-reader | Until you ask for it to be deleted |
-| SHA-256 hash of a pairing code and the device it belongs to | To pair an AI app | Until it is used, replaced, or 10 minutes pass |
+| SHA-256 hash of a pairing code and the device it belongs to | To pair an AI app | Until it is used or replaced; it stops working after 10 minutes and is deleted at the next cleanup |
 | AI app registrations (app name and callback URLs, as the app sends them) and OAuth grants and tokens for your device | So connected apps can reach your e-reader | Grants until you disconnect the app from **Connected apps** on the reader; access tokens expire after 1 hour |
-| IP address of a failed pairing attempt, with a counter | To limit guessing of pairing codes | 10 minutes |
+| IP address of a failed pairing attempt, with a counter | To limit guessing of pairing codes | Counts for 10 minutes; deleted at the next cleanup after that |
 
 ## Logs
 
