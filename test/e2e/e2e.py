@@ -139,8 +139,15 @@ class KOReader:
         (self.home / "settings.reader.lua").write_text(settings)
         # Copy, not symlink: KOReader reads the plugin directory name, and a
         # copy is what a real install looks like
-        shutil.copytree(plugin_dir, self.home / "plugins" / "mcp.koplugin",
-                        ignore=shutil.ignore_patterns(".git", ".github", ".e2e", "test", "scripts", "*.md"))
+        skip_names = shutil.ignore_patterns(".git", ".github", ".e2e", "test", "scripts", "*.md")
+        work_dir = Path(work).resolve()
+
+        def ignore(directory, names):
+            # Also skip the work directory, wherever it is inside the repository
+            skipped = set(skip_names(directory, names))
+            return skipped | {n for n in names if (Path(directory) / n).resolve() == work_dir}
+
+        shutil.copytree(plugin_dir, self.home / "plugins" / "mcp.koplugin", ignore=ignore)
         self.proc = None
 
     def start(self, book, ready=port_open, timeout=90):
@@ -264,6 +271,8 @@ def t_read_pages(ctx):
 
 def t_search(ctx):
     text, result = call_tool("search_book", {"query": "curiouser"})
+    found = (result.get("structuredContent") or {}).get("total_count") or 0
+    assert found > 0, f"search_book found nothing: {text[:500]}"
     contains(text.lower(), "curiouser", "search_book")
     ctx["search"] = (text, result)
 

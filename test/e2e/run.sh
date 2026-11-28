@@ -17,10 +17,10 @@ set -euo pipefail
 KOREADER_VERSION="${KOREADER_VERSION:-v2026.07.1}"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${E2E_WORK_DIR:-$REPO/.e2e}"
+mkdir -p "$WORK"
+WORK="$(cd "$WORK" && pwd)" # absolute, since the relay step changes directory
 KO_DIR="$WORK/koreader-$KOREADER_VERSION"
 ASSET="koreader-linux-x86_64-$KOREADER_VERSION.tar.xz"
-
-mkdir -p "$WORK"
 
 if [ ! -x "$KO_DIR/lib/koreader/reader.lua" ]; then
     echo "Downloading KOReader $KOREADER_VERSION ($ASSET)"
