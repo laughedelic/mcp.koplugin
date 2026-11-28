@@ -7,6 +7,7 @@
 local logger = require("logger")
 local rapidjson = require("rapidjson")
 local Event = require("ui/event")
+local UIManager = require("ui/uimanager")
 local MRTR = require("mcp_mrtr")
 
 local MCPTools = {
@@ -305,7 +306,7 @@ function MCPTools:list()
     table.insert(tools, {
         name = "annotate",
         description =
-        "Add a highlight or note to text. Creates a highlight when note is omitted. Behavior depends on inputs: (1) No text/positions: uses the current UI selection (fails if none). (2) Only start/end positions: annotates that location (e.g. positions from search_book results). (3) Only text: searches for the text in the book to find its position automatically.",
+        "Add a highlight or note to text. Creates a highlight when note is omitted. Behavior depends on inputs: (1) No text/positions: uses the current UI selection (fails if none). (2) Only start/end positions: annotates that location (e.g. positions from search_book results; reflowable books only, use text for PDF and DjVu). (3) Only text: searches for the text in the book to find its position automatically.",
         inputSchema = {
             type = "object",
             properties = {
@@ -326,6 +327,12 @@ function MCPTools:list()
                 ["end"] = {
                     type = "string",
                     description = "Optional: End position (XPointer) from search_book results.",
+                },
+                note_format = {
+                    type = "string",
+                    enum = { "plain", "markdown", "html" },
+                    description =
+                    "Optional: Format of the note. Plain text by default. KOReader 2026.07 and later render markdown and HTML notes; older versions show them as plain text.",
                 },
                 if_note_exists = {
                     type = "string",
@@ -941,18 +948,34 @@ function MCPTools:annotate(args, ctx)
     -- 2. Only positions (start/end): use those positions
     -- 3. Only text: search for it to find positions
     -- 4. Text + positions: use both as provided
-    local text_to_highlight, start_pos, end_pos
+    local text_to_highlight, start_pos, end_pos, pboxes
+    local from_selection = false
 
     if arg_start and arg_end then
-        -- Positions provided - use them
+        -- Positions provided - use them. They are XPointers, which only
+        -- reflowable (CRE) documents have.
+        if self.ui.paging then
+            return {
+                content = {
+                    { type = "text", text = "Error: start/end positions only work in reflowable books (EPUB, FB2, ...). For this book, pass the text to highlight instead." },
+                },
+                isError = true,
+            }
+        end
+        if doc.isXPointerInDocument
+            and not (doc:isXPointerInDocument(arg_start) and doc:isXPointerInDocument(arg_end)) then
+            return {
+                content = {
+                    { type = "text", text = "Error: start or end is not a valid position in this book. Use the positions from search_book results." },
+                },
+                isError = true,
+            }
+        end
         start_pos = arg_start
         end_pos = arg_end
-        text_to_highlight = provided_text -- may be nil, that's ok
-
-        -- If no text provided with positions, try to get it from selection or leave nil
-        if not text_to_highlight and selected and selected.text then
-            text_to_highlight = selected.text
-        end
+        -- Prefer the book's own text for the highlight over the model's copy
+        local ok, book_text = pcall(doc.getTextFromXPointers, doc, start_pos, end_pos)
+        text_to_highlight = (ok and book_text and book_text ~= "") and book_text or provided_text
     elseif provided_text then
         -- Only text provided - search for it to find positions
         if not doc.findAllText then
@@ -983,7 +1006,13 @@ function MCPTools:annotate(args, ctx)
 
         -- Use the first match
         local match = results[1]
-        if not match.start or not match["end"] then
+        local found
+        if self.ui.paging then
+            found = self:pagingSelectionFromMatch(match)
+        elseif match.start and match["end"] then
+            found = { pos0 = match.start, pos1 = match["end"], text = match.matched_text }
+        end
+        if not found then
             return {
                 content = {
                     { type = "text", text = "Error: Found the text but could not determine its position" },
@@ -992,9 +1021,10 @@ function MCPTools:annotate(args, ctx)
             }
         end
 
-        start_pos = match.start
-        end_pos = match["end"]
-        text_to_highlight = match.matched_text or provided_text
+        start_pos = found.pos0
+        end_pos = found.pos1
+        pboxes = found.pboxes
+        text_to_highlight = found.text or match.matched_text or provided_text
 
         -- Warn if multiple matches found
         if #results > 1 then
@@ -1010,6 +1040,7 @@ function MCPTools:annotate(args, ctx)
                 isError = true,
             }
         end
+        from_selection = true
         text_to_highlight = selected.text
         start_pos = selected.pos0
         end_pos = selected.pos1
@@ -1020,19 +1051,6 @@ function MCPTools:annotate(args, ctx)
             },
             isError = true,
         }
-    end
-
-    -- Get chapter information if available
-    -- Prefer chapter from selection if available, otherwise try to get from TOC
-    local chapter = nil
-    if selected and selected.chapter then
-        chapter = selected.chapter
-    elseif self.ui.toc and self.ui.toc.getTocTitleByPage then
-        local pg_or_xp = self.ui.paging and doc:getCurrentPage() or start_pos
-        chapter = self.ui.toc:getTocTitleByPage(pg_or_xp)
-    end
-    if chapter == "" then
-        chapter = nil
     end
 
     -- Check if annotation module is available (modern KOReader)
@@ -1103,13 +1121,10 @@ function MCPTools:annotate(args, ctx)
                 end
                 local had_note = existing.note and existing.note ~= ""
                 if decision == "append" and had_note then
-                    existing.note = existing.note .. "\n\n" .. note_text
+                    self:writeNote(existing, existing.note .. "\n\n" .. note_text, args.note_format, true)
                 else
-                    existing.note = note_text
+                    self:writeNote(existing, note_text, args.note_format)
                 end
-                existing.datetime_updated = os.date("%Y-%m-%d %H:%M:%S")
-                -- Notify the UI about the modification
-                self.ui:handleEvent(Event:new("AnnotationsModified", { existing }))
 
                 local verb = not had_note and "Added note to"
                     or (decision == "append" and "Appended to the note on" or "Replaced the note on")
@@ -1129,36 +1144,55 @@ function MCPTools:annotate(args, ctx)
         end
     end
 
-    -- Create the annotation item (modern format)
-    local pg_or_xp = self.ui.paging and start_pos.page or start_pos
-    local item = {
-        page = pg_or_xp,
-        pos0 = start_pos,
-        pos1 = end_pos,
-        text = text_to_highlight,
-        chapter = chapter,
-        drawer = self.ui.highlight and self.ui.highlight.view and self.ui.highlight.view.highlight
-            and self.ui.highlight.view.highlight.saved_drawer or "lighten",
-        color = self.ui.highlight and self.ui.highlight.view and self.ui.highlight.view.highlight
-            and self.ui.highlight.view.highlight.saved_color or "yellow",
-    }
-
-    -- Add note if provided
-    if note_text and note_text ~= "" then
-        item.note = note_text
+    -- Save through KOReader's own highlighter, so the highlight gets the
+    -- user's default style and color, PDF page boxes, an EPUB CFI and the
+    -- chapter title, and is written into the PDF file when the user enabled it
+    local hl = self.ui.highlight
+    if not (hl and hl.saveHighlight) then
+        return {
+            content = {
+                { type = "text", text = "Error: Highlighting is not available for this document" },
+            },
+            isError = true,
+        }
     end
-
-    -- Add the annotation using the modern API
-    local index = self.ui.annotation:addItem(item)
-
-    -- Notify the UI about the new annotation
-    local event_data = { item, index_modified = index }
-    if note_text and note_text ~= "" then
-        event_data.nb_notes_added = 1
+    local ok, index
+    if from_selection then
+        ok, index = pcall(hl.saveHighlight, hl)
+        -- Close the selection menu and clear the selection, as the UI does
+        -- after highlighting
+        if ok and index and hl.onClose then
+            hl:onClose()
+        end
     else
-        event_data.nb_highlights_added = 1
+        -- saveHighlight() works on the current selection: put the passage
+        -- there for the call, then restore whatever the user had selected
+        local user_selection = hl.selected_text
+        hl.selected_text = {
+            pos0 = start_pos,
+            pos1 = end_pos,
+            text = text_to_highlight or "",
+            pboxes = pboxes,
+        }
+        ok, index = pcall(hl.saveHighlight, hl)
+        hl.selected_text = user_selection
     end
-    self.ui:handleEvent(Event:new("AnnotationsModified", event_data))
+    local item = ok and index and self.ui.annotation.annotations[index]
+    if not item then
+        logger.warn("MCP annotate: saveHighlight failed:", ok and "no index" or index)
+        return {
+            content = {
+                { type = "text", text = "Error: KOReader could not save the highlight at this location" },
+            },
+            isError = true,
+        }
+    end
+
+    -- Add the note the way KOReader's note editor does
+    if note_text and note_text ~= "" then
+        self:writeNote(item, note_text, args.note_format)
+    end
+    UIManager:setDirty(self.ui.dialog, "ui")
 
     -- Build concise response message
     local response
@@ -1173,6 +1207,67 @@ function MCPTools:annotate(args, ctx)
             { type = "text", text = response },
         },
     }
+end
+
+-- Turn a findAllText() match in a paged document (PDF, DjVu) into a selection
+-- for saveHighlight(): native page positions, text and page boxes.
+-- @return { pos0, pos1, text, pboxes } or nil
+function MCPTools:pagingSelectionFromMatch(match)
+    local page, boxes = match.start, match.boxes
+    if type(page) ~= "number" or type(boxes) ~= "table" or #boxes == 0 then
+        return nil
+    end
+    local first, last = boxes[1], boxes[#boxes]
+    local pos0 = { page = page, x = first.x + first.w / 2, y = first.y + first.h / 2 }
+    local pos1 = { page = page, x = last.x + last.w / 2, y = last.y + last.h / 2 }
+    -- The match boxes are native page coordinates: read the text with
+    -- reflow off, as KOReader does when it extends a highlight
+    local doc = self.ui.document
+    local configurable = doc.configurable
+    local text_wrap = configurable and configurable.text_wrap
+    if configurable then
+        configurable.text_wrap = 0
+    end
+    local ok, sel = pcall(doc.getTextFromPositions, doc, pos0, pos1)
+    if configurable then
+        configurable.text_wrap = text_wrap
+    end
+    if not ok or type(sel) ~= "table" or type(sel.pboxes) ~= "table" or #sel.pboxes == 0 then
+        logger.warn("MCP annotate: no page boxes for the match on page", page, ok and "" or sel)
+        return nil
+    end
+    return {
+        pos0 = sel.pos0 or pos0,
+        pos1 = sel.pos1 or pos1,
+        text = sel.text,
+        pboxes = sel.pboxes,
+    }
+end
+
+local NOTE_FORMATS = { plain = false, markdown = "md", html = "html" }
+
+-- Set an annotation's note the way KOReader's note editor does: write it into
+-- the PDF when that's enabled and keep the highlight/note counts right.
+-- @param note_format "plain", "markdown", "html" or nil (plain, or the
+--        current format when keep_format is set)
+function MCPTools:writeNote(item, note, note_format, keep_format)
+    local had_note = item.note and item.note ~= ""
+    item.note = note
+    local format = NOTE_FORMATS[note_format]
+    if format ~= nil then
+        item.note_format = format or nil
+    elseif not keep_format then
+        item.note_format = nil
+    end
+    if self.ui.highlight and self.ui.highlight.writePdfAnnotation then
+        self.ui.highlight:writePdfAnnotation("content", item, note)
+    end
+    if had_note then
+        self.ui:handleEvent(Event:new("AnnotationsModified", { item }))
+    else
+        self.ui:handleEvent(Event:new("AnnotationsModified",
+            { item, nb_highlights_added = -1, nb_notes_added = 1 }))
+    end
 end
 
 -- Decide what to do when annotate would overwrite an existing note.
