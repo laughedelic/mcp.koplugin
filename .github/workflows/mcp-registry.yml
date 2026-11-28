@@ -23,9 +23,14 @@ jobs:
           [ -n "$version" ] || { echo "No version in _meta.lua" >&2; exit 1; }
           jq --arg v "$version" '.version = $v' server.json > server.tmp && mv server.tmp server.json
           cat server.json
+      # The registry has no official action; its docs install the CLI from
+      # the latest release
       - name: Install mcp-publisher
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          gh release download --repo modelcontextprotocol/registry \
+            --pattern 'mcp-publisher_linux_amd64.tar.gz' --output - | tar xz mcp-publisher
       - name: Log in to the MCP Registry
         run: ./mcp-publisher login github-oidc
       - name: Publish
