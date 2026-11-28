@@ -5,7 +5,6 @@ The landing page and docs for the plugin, published to GitHub Pages by `.github/
 - `index.html` is the landing page. It is a plain HTML file.
 - `*.md` are the docs pages. They share `_layouts/docs.html`; the sidebar order is in `_data/nav.yml`.
 - `assets/` has the styles, fonts, icon and the demo script.
-- `mocks/` has alternative landing page ideas, kept for comparison. It isn't linked from the site.
 
 Every link is relative, so the site works at any address and `index.html` opens straight from disk.
 
@@ -18,7 +17,7 @@ jekyll serve --source docs
 
 ## Changing the demo
 
-The conversations on the landing page are written in `index.html`, one `<ol data-scenario>` per tab, next to the two book pages the reader shows. Edit the text there. `assets/demo.js` only plays them and doesn't need to change unless the mechanics do.
+The demo on the landing page is one story, written in `index.html` as the list `<ol data-story>`: chat lines, plus cues that say which device is in focus, what the reader shows and what the caption says. The comment above the list explains the format. Edit the list to change the demo. `assets/demo.js` only plays it and doesn't need to change unless the mechanics do.
 
 ## Fonts
 

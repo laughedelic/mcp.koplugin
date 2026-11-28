@@ -36,26 +36,39 @@
     </div>
 
     <!--
-      The demo. Each <ol data-scenario> is one conversation; assets/demo.js plays whichever one
-      its tab selects. data-*-before is how the reader looks when the conversation starts,
-      data-*-after is how it looks once the assistant's last action finishes.
-      data-page picks a .reader-page, data-mark is "none", "select" or "highlight".
+      The demo is one story, written as the list in <ol data-story> below. assets/demo.js plays
+      the list from top to bottom. Each <li> is one step:
+        class="you" / "ai" / "tool"  a line in the chat ("you" is typed into the input first)
+        class="cue"                  nothing in the chat, only the directions below
+      Any step can carry directions:
+        data-focus="reader|phone|both"  which device steps forward
+        data-mark="none|select|highlight"  what happens to the marked passage on the reader
+        data-page="1|3"              which .reader-page the reader shows
+        data-caption="…"             the line of narration above the devices
+        data-wait="2000"             how long to stay on this step, in milliseconds
+      When a step moves the focus to the reader, its page or mark changes a moment later,
+      so the change is seen happening.
+      A step with an id is the start of a chapter; the buttons in .demo-beats jump to those ids.
     -->
-    <section class="demo" data-demo aria-label="Example conversations">
-      <div class="demo-tabs">
-        <button type="button" data-play="ask-word" aria-pressed="true">Ask about a word</button>
-        <button type="button" data-play="save-note" aria-pressed="false">Save a note</button>
-        <button type="button" data-play="find-place" aria-pressed="false">Find a place</button>
+    <section class="demo" data-demo data-focus="phone" aria-label="A walk-through of asking about a book from your phone">
+      <div class="demo-beats">
+        <button type="button" data-goto="beat-ask" aria-pressed="false">Ask about a passage</button>
+        <button type="button" data-goto="beat-note" aria-pressed="false">Save a note</button>
+        <button type="button" data-goto="beat-find" aria-pressed="false">Find a place</button>
       </div>
 
+      <p class="demo-caption">
+        <span data-caption>Select a passage on your reader, ask about it from your phone, and keep what you work out as a note in the book.</span>
+        <button type="button" data-replay hidden>Play again</button>
+      </p>
+
       <div class="demo-stage">
-        <figure class="reader" data-page="1" data-mark="select" aria-label="An e-reader showing Moby-Dick in KOReader">
+        <figure class="reader" data-device="reader" data-page="1" data-mark="highlight" aria-label="An e-reader showing Moby-Dick in KOReader">
           <div class="reader-screen">
             <div class="reader-page" data-p="1" style="--progress: 2%">
               <h3><small>Chapter 1</small> Loomings</h3>
               <div class="reader-text" lang="en">
-                <p>Call me Ishmael. Some years ago—never mind how long precisely—having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world. It is a way I have of driving off the spleen and regulating the circulation. Whenever I find myself growing grim about the mouth; <mark class="mark-highlight">whenever it is a damp, drizzly November in my soul</mark>; whenever I find myself involuntarily pausing before coffin warehouses, and bringing up the rear of every funeral I meet; and especially whenever my <mark class="mark-select">hypos</mark> get such an upper hand of me, that it requires a strong moral principle to prevent me from deliberately stepping into the street, and methodically knocking people’s hats off—then, I account it high time to get to sea as soon as I can. This is my substitute for pistol and ball. With a philosophical flourish Cato throws himself upon his sword; I quietly take to the ship. There is nothing surprising in this. If they but knew it, almost all men in their degree, some time or other, cherish very nearly the same feelings towards the ocean with me.</p>
-                <p>There now is your insular city of the Manhattoes, belted round by wharves as Indian isles by coral reefs—commerce surrounds it with her surf.</p>
+                <p>Call me Ishmael. Some years ago—never mind how long precisely—having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world. It is a way I have of driving off the spleen and regulating the circulation. Whenever I find myself growing grim about the mouth; <mark class="passage">whenever it is a damp, drizzly November in my soul</mark>; whenever I find myself involuntarily pausing before coffin warehouses, and bringing up the rear of every funeral I meet; and especially whenever my hypos get such an upper hand of me, that it requires a strong moral principle to prevent me from deliberately stepping into the street, and methodically knocking people’s hats off—then, I account it high time to get to sea as soon as I can. This is my substitute for pistol and ball.</p>
               </div>
               <div class="reader-status">Loomings &nbsp; 12 / 624 &nbsp; 2%</div>
             </div>
@@ -63,51 +76,51 @@
             <div class="reader-page" data-p="3" style="--progress: 5%">
               <h3><small>Chapter 3</small> The Spouter-Inn</h3>
               <div class="reader-text" lang="en">
-                <p>Entering that gable-ended Spouter-Inn, you found yourself in a wide, low, straggling entry with old-fashioned wainscots, reminding one of the bulwarks of some condemned old craft. On one side hung a very large oil painting so thoroughly besmoked, and every way defaced, that in the unequal crosslights by which you viewed it, it was only by diligent study and a series of systematic visits to it, and careful inquiry of the neighbors, that you could any way arrive at an understanding of its purpose. Such unaccountable masses of shades and shadows, that at first you almost thought some ambitious young artist, in the time of the New England hags, had endeavored to delineate chaos bewitched. But by dint of much and earnest contemplation, and oft repeated ponderings, and especially by throwing open the little window towards the back of the entry, you at last come to the conclusion that such an idea, however wild, might not be altogether unwarranted.</p>
+                <p>Entering that gable-ended Spouter-Inn, you found yourself in a wide, low, straggling entry with old-fashioned wainscots, reminding one of the bulwarks of some condemned old craft. On one side hung a very large oil painting so thoroughly besmoked, and every way defaced, that in the unequal crosslights by which you viewed it, it was only by diligent study and a series of systematic visits to it, and careful inquiry of the neighbors, that you could any way arrive at an understanding of its purpose. Such unaccountable masses of shades and shadows, that at first you almost thought some ambitious young artist, in the time of the New England hags, had endeavored to delineate chaos bewitched.</p>
               </div>
               <div class="reader-status">The Spouter-Inn &nbsp; 31 / 624 &nbsp; 5%</div>
             </div>
+
+            <span class="reader-touch" aria-hidden="true"></span>
           </div>
         </figure>
 
-        <div class="phone" aria-label="A chat app on a phone">
+        <div class="phone" data-device="phone" aria-label="A chat app on a phone">
           <div class="phone-bar">Assistant <small>KOReader connected</small></div>
           <div class="chat">
+            <ol data-story>
+              <li class="cue" id="beat-ask" data-focus="reader" data-page="1" data-mark="none" data-wait="1500"
+                  data-caption="You’re reading on your e-reader."></li>
+              <li class="cue" data-mark="select" data-wait="2600"
+                  data-caption="A line makes you stop. Select it."></li>
+              <li class="you" data-focus="phone"
+                  data-caption="Pick up your phone and ask, in the AI app you already use.">What does he mean by this?</li>
+              <li class="tool"
+                  data-caption="The assistant looks at your reader: the book, the page, what you selected.">Read your selection in KOReader</li>
+              <li class="ai">“A damp, drizzly November in my soul” is Ishmael’s name for a gloom he can’t shake: grey, cold and going nowhere, like the month. When it sets in, he goes to sea.</li>
 
-            <ol id="ask-word" data-scenario
-                data-page-before="1" data-mark-before="select"
-                data-page-after="1" data-mark-after="select"
-                data-caption="Select text on the reader and the assistant knows what “this” means. No typing on e-ink.">
-              <li class="you">What does the word I selected mean?</li>
-              <li class="tool">Checked your current page</li>
-              <li class="ai">You selected “hypos”, in the first chapter of Moby-Dick. It’s 19th-century slang, short for hypochondria, which back then meant a fit of low spirits. Ishmael is saying that when the gloom gets the better of him, it’s time to go to sea.</li>
-            </ol>
+              <li class="you" id="beat-note"
+                  data-caption="Keep what you worked out. Ask for a note.">Highlight it and note that the sea is his cure for gloom.</li>
+              <li class="tool"
+                  data-caption="The assistant writes into the book on your reader.">Saved a highlight and a note</li>
+              <li class="ai" data-wait="1800">Done. It’s highlighted, with the note “The sea is his cure for gloom.”</li>
+              <li class="cue" data-focus="reader" data-mark="highlight" data-wait="3600"
+                  data-caption="Back on your reader, the highlight and the note are in the book."></li>
 
-            <ol id="save-note" data-scenario hidden
-                data-page-before="1" data-mark-before="none"
-                data-page-after="1" data-mark-after="highlight"
-                data-caption="Highlights and notes are saved into the book itself, next to the ones you make by hand.">
-              <li class="you">Highlight the “November in my soul” line and note that this is why he goes to sea.</li>
-              <li class="tool">Added a highlight and a note</li>
-              <li class="ai">Done. I highlighted “whenever it is a damp, drizzly November in my soul” and added the note: “Ishmael’s reason for going to sea. It’s his cure for gloom.”</li>
-            </ol>
-
-            <ol id="find-place" data-scenario hidden
-                data-page-before="1" data-mark-before="none"
-                data-page-after="3" data-mark-after="none"
-                data-caption="The assistant can search the whole book and turn the reader to the right page.">
-              <li class="you">Take me to where Queequeg first shows up.</li>
+              <li class="you" id="beat-find" data-focus="phone"
+                  data-caption="It can search the whole book.">Where does Queequeg first show up? Take me there.</li>
               <li class="tool">Searched the book</li>
               <li class="tool">Turned to page 31</li>
-              <li class="ai">He first appears in chapter 3, “The Spouter-Inn”, as the harpooneer Ishmael is told he’ll be sharing a bed with. Your reader is now at the start of that chapter.</li>
+              <li class="ai" data-wait="3200">Chapter 3, “The Spouter-Inn”. He’s the harpooneer Ishmael is told he’ll be sharing a bed with. Your reader is there now.</li>
+              <li class="cue" data-focus="reader" data-page="3" data-mark="none" data-wait="3200"
+                  data-caption="And it can turn your reader to the page."></li>
+              <li class="cue" data-focus="both" data-wait="1"
+                  data-caption="The book stays on your reader. The conversation stays on your phone."></li>
             </ol>
-
           </div>
-          <div class="phone-input" aria-hidden="true">Ask about your book</div>
+          <div class="phone-input" aria-hidden="true"><span data-typed data-placeholder="Ask about your book"></span></div>
         </div>
       </div>
-
-      <p class="demo-caption" aria-live="polite">Select text on the reader and the assistant knows what “this” means. No typing on e-ink.</p>
     </section>
   </div>
 

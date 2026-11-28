@@ -34,7 +34,7 @@
   }
 }
 
-/* Demo */
+/* Demo: an e-reader and a phone. assets/demo.js moves data-focus between them. */
 
 .demo {
   --reader-w: 24rem;
@@ -42,38 +42,68 @@
   width: min(100%, calc(var(--reader-w) + var(--phone-w) + 2rem));
   margin-inline: auto;
 }
-.demo-tabs {
+.demo-beats {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  margin-bottom: 1.25rem;
+  margin-bottom: 0.9rem;
 }
-.demo-tabs button {
-  padding: 0.45rem 0.95rem;
+.demo-beats button {
+  padding: 0.4rem 0.9rem;
   border: 1.5px solid var(--ink);
   border-radius: 2rem;
   background: none;
   color: var(--ink);
   font: inherit;
-  font-size: 0.98rem;
+  font-size: 0.95rem;
   cursor: pointer;
 }
-.demo-tabs button:hover {
+.demo-beats button:hover {
   background: var(--panel);
 }
-.demo-tabs button[aria-pressed="true"] {
+.demo-beats button[aria-pressed="true"] {
   background: var(--ink);
   color: var(--paper);
 }
+.demo-caption {
+  /* Two lines are reserved so the devices don't jump when the narration changes. */
+  min-height: 3.1em;
+  margin: 0 0 0.9rem;
+  font-family: var(--serif);
+  font-size: 1.15rem;
+  font-style: italic;
+  line-height: 1.35;
+}
+.demo-caption button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-family: var(--sans);
+  font-size: 0.9em;
+  font-style: normal;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  cursor: pointer;
+}
 .demo-stage {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 2rem;
 }
-.demo-caption {
-  min-height: 3.2em;
-  margin: 1.25rem 0 0;
-  color: var(--ink-soft);
+
+/* The device the story is about steps forward; the other one steps back. */
+.demo [data-device] {
+  cursor: pointer;
+  transition: transform 0.5s cubic-bezier(0.3, 0.7, 0.2, 1), opacity 0.5s ease;
+}
+.demo[data-focus="reader"] .phone,
+.demo[data-focus="phone"] .reader {
+  opacity: 0.55;
+  transform: scale(0.95);
 }
 
 /* E-reader. Sizes inside the screen are in cqw so the page lays out the same at any width. */
@@ -88,6 +118,7 @@
   box-shadow: 0 1.2rem 2.5rem -1.2rem rgb(0 0 0 / 0.45);
 }
 .reader-screen {
+  position: relative;
   container-type: inline-size;
   aspect-ratio: 3 / 4;
   overflow: hidden;
@@ -95,12 +126,13 @@
   color: var(--eink-ink);
 }
 .reader-page {
+  position: relative;
   display: none;
   flex-direction: column;
   height: 100%;
-  padding: 6cqw 6.5cqw 0;
+  padding: 6.5cqw 7cqw 0;
   font-family: var(--serif);
-  font-size: 3.75cqw;
+  font-size: 4.4cqw;
   line-height: 1.5;
 }
 .reader[data-page="1"] .reader-page[data-p="1"],
@@ -109,7 +141,7 @@
 }
 .reader-page h3 {
   margin: 0 0 1.5em;
-  font-size: 1.25em;
+  font-size: 1.2em;
   font-weight: 600;
   line-height: 1.5;
   text-align: center;
@@ -122,23 +154,19 @@
 }
 .reader-text {
   /* A whole number of lines, so the last line is never cut in half. */
-  height: 25.5em;
+  height: 21em;
   overflow: hidden;
   text-align: justify;
   hyphens: auto;
 }
 .reader-text p {
   margin: 0;
-  text-indent: 1.4em;
-}
-.reader-text p:first-child {
-  text-indent: 0;
 }
 .reader-status {
   margin-top: auto;
   padding-block: 1.6cqw 2cqw;
   font-family: var(--sans);
-  font-size: 2.9cqw;
+  font-size: 3.1cqw;
   text-align: center;
 }
 .reader-status::before {
@@ -149,28 +177,55 @@
   background: linear-gradient(to right, var(--eink-ink) var(--progress, 1%), #b9b9b1 0);
 }
 
-/* Selected text is inverted, a saved highlight is dithered grey, like on the device. */
-.reader mark {
-  background: none;
+/* The passage: a selection sweeps across it in grey, a saved highlight is dithered. */
+.reader .passage {
+  background: linear-gradient(rgb(28 28 28 / 0.3), rgb(28 28 28 / 0.3)) no-repeat 0 0 / 0% 100%;
   color: inherit;
 }
-.reader[data-mark="select"] .mark-select {
-  background: var(--eink-ink);
-  color: var(--eink);
+.reader[data-mark="select"] .passage {
+  background-size: 100% 100%;
+  transition: background-size 1.2s 0.5s linear;
 }
-.reader[data-mark="highlight"] .mark-highlight {
-  background: conic-gradient(rgb(28 28 28 / 0.42) 25%, transparent 0) 0 0 / 0.8cqw 0.8cqw;
+.reader[data-mark="highlight"] .passage {
+  background: conic-gradient(rgb(28 28 28 / 0.5) 25%, transparent 0) 0 0 / 0.9cqw 0.9cqw;
 }
-.reader[data-mark="highlight"] .mark-highlight::after {
+.reader[data-mark="highlight"] .passage::after {
+  /* KOReader marks a highlight that has a note in the margin. */
   content: "✎";
   position: absolute;
-  right: 1.2cqw;
-  margin-top: -0.1em;
-  font-size: 1.1em;
-  text-indent: 0;
+  right: 1.6cqw;
+  font-size: 1.15em;
+  line-height: 1.3;
 }
-.reader-page {
-  position: relative;
+/* The finger that makes the selection. demo.js puts it at the start of the passage. */
+.reader-touch {
+  position: absolute;
+  width: 9cqw;
+  height: 9cqw;
+  margin: -4.5cqw 0 0 -4.5cqw;
+  border-radius: 50%;
+  background: rgb(28 28 28 / 0.35);
+  opacity: 0;
+  pointer-events: none;
+}
+.reader-touch.is-pressing {
+  animation: press 2.1s ease-out;
+  translate: var(--drag-x, 0) var(--drag-y, 0);
+  transition: translate 1.2s 0.5s linear;
+}
+@keyframes press {
+  0% {
+    opacity: 0;
+    transform: scale(1.8);
+  }
+  15%,
+  85% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 /* One full e-ink refresh when the page changes. */
@@ -222,8 +277,10 @@
 }
 .phone-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
+  gap: 0 0.5rem;
   padding: 0.9rem 1rem 0.7rem;
   border-bottom: 1px solid var(--chat-bubble);
   font-weight: 600;
@@ -248,7 +305,11 @@
   flex-direction: column;
   justify-content: flex-end;
   min-height: 0;
-  padding: 0.9rem 0.8rem;
+  padding: 1.2rem 0.8rem 0.7rem;
+  overflow: hidden;
+  /* Older messages fade out at the top as the conversation grows. */
+  -webkit-mask-image: linear-gradient(transparent, #000 1.2rem);
+  mask-image: linear-gradient(transparent, #000 1.2rem);
 }
 .chat ol {
   display: flex;
@@ -258,11 +319,12 @@
   padding: 0;
   list-style: none;
 }
-.chat ol[hidden] {
-  display: none;
-}
 .chat li {
   max-width: 92%;
+}
+.chat .cue,
+.chat li.is-waiting {
+  display: none;
 }
 .chat .you {
   align-self: flex-end;
@@ -285,6 +347,7 @@
 }
 .chat .tool::before {
   content: "✓";
+  flex: none;
   display: grid;
   place-items: center;
   width: 1.25em;
@@ -303,10 +366,6 @@
     transform: rotate(1turn);
   }
 }
-/* The player hides each line, then shows them in turn. */
-.chat li.is-waiting {
-  display: none;
-}
 .chat li.is-in {
   animation: msg-in 0.25s ease-out;
 }
@@ -320,30 +379,73 @@
   margin: 0 0.8rem 0.9rem;
   padding: 0.55rem 0.9rem;
   border: 1px solid var(--chat-bubble);
-  border-radius: 2rem;
+  border-radius: 1.3rem;
+}
+.phone-input span:empty::before {
+  content: attr(data-placeholder);
   color: var(--chat-soft);
 }
+.phone-input span:not(:empty)::after {
+  content: "";
+  display: inline-block;
+  width: 1.5px;
+  height: 1.1em;
+  margin-left: 1px;
+  background: var(--chat-accent);
+  vertical-align: text-bottom;
+}
 
+/* On a phone the two devices overlap, and the one in focus comes to the front,
+   so the whole exchange fits on one screen. Tap either device to bring it forward. */
 @media (max-width: 46rem) {
+  .demo-beats {
+    gap: 0.35rem;
+  }
+  .demo-beats button {
+    padding: 0.3rem 0.7rem;
+    font-size: 0.85rem;
+  }
+  .demo-caption {
+    font-size: 1.05rem;
+  }
   .demo-stage {
-    flex-direction: column;
-    align-items: center;
-    gap: 1.25rem;
+    display: block;
   }
   .reader {
-    flex-basis: auto;
-    width: min(100%, 23rem);
+    position: relative;
+    width: 80%;
+    transform-origin: left center;
   }
   .phone {
-    flex-basis: auto;
-    width: min(100%, 20rem);
-    height: 27rem;
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: 66%;
+    height: auto;
     margin-top: 0;
+    border-width: 0.4rem;
+    border-radius: 1.8rem;
+    font-size: 0.8rem;
+    transform-origin: right center;
+  }
+  /* Here one device is always in front. When the story shows both, it is the reader. */
+  .demo:not([data-focus="phone"]) .reader,
+  .demo[data-focus="phone"] .phone {
+    z-index: 1;
+  }
+  .demo:not([data-focus="phone"]) .phone,
+  .demo[data-focus="phone"] .reader {
+    opacity: 0.5;
+    transform: scale(0.86);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .demo [data-device],
+  .reader[data-mark="select"] .passage {
+    transition: none;
+  }
   .reader.is-refreshing .reader-screen,
+  .reader-touch.is-pressing,
   .chat li.is-in,
   .chat .tool.is-working::before {
     animation: none;
