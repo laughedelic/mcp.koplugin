@@ -80,6 +80,7 @@ It finds KOReader's folder on Kobo, Kindle, Android and PocketBook, or takes the
       <sub>When the idle timeout is enabled, you'll see a warning notification 5 seconds before the server stops. Tap the notification to reset the idle timer and keep the server alive.</sub>
 
    - **Turn off WiFi on idle timeout**: Save battery by disabling WiFi when server stops due to idle timeout
+   - **Offline memory** (remote mode, off by default): Let connected AI apps keep answering from a saved copy while the reader is asleep or away. See [Offline memory](#offline-memory)
 3. Switch between local and cloud relay modes:
     - **Local mode**: Server listens on local network only
     - **Cloud relay**: Enable to use the cloud relay for remote access
@@ -256,7 +257,7 @@ The relay uses OAuth 2.1 Authorization Code flow with PKCE, so MCP clients that 
 > With an older or self-hosted relay that doesn't support pairing codes, the plugin shows a device ID and a permanent 6-digit passcode instead, which you enter on the sign-in page.
 
 > [!IMPORTANT]
-> The relay is just a bridge forwarding requests between your e-reader and AI clients. It does not store book content, highlights or notes; it keeps only what it needs to route and authorize requests (see the [privacy policy](PRIVACY.md)).
+> The relay is just a bridge forwarding requests between your e-reader and AI clients. Unless you turn on [offline memory](#offline-memory), it does not store book content, highlights or notes; it keeps only what it needs to route and authorize requests (see the [privacy policy](PRIVACY.md)).
 
 The relay implementation is open source: [koreader-mcp-cloud-relay](https://github.com/laughedelic/koreader-mcp-cloud-relay). You can deploy your own instance for full control. By default, plugin uses the relay I deployed for myself. I'll be sharing it as long as it's within the free tier limits.
 
@@ -268,9 +269,30 @@ The relay implementation is open source: [koreader-mcp-cloud-relay](https://gith
 - **Short-lived tokens**: Access tokens expire in 1 hour
 - **Audience validation**: Tokens are bound to your specific device
 - All traffic is encrypted (HTTPS), and the plugin verifies the relay's certificate and host name before sending its credentials. If your e-reader's clock is far off, the check fails; fix the date and time. For a development relay with a self-signed certificate, set `mcp_relay_tls_verify = false` in KOReader's `settings.reader.lua`
-- The relay doesn't store any book content, only forwards authenticated requests
+- The relay doesn't store any book content, only forwards authenticated requests. The one exception is the encrypted copy you can opt into with [offline memory](#offline-memory)
 - **Device secret** (needs an up-to-date relay): Your e-reader also generates a random secret that authenticates its connection to the relay, so knowing your device ID is not enough to receive your requests. The relay never forwards your AI client's access token to the e-reader. An older self-hosted relay ignores the secret, lets anyone who knows the device ID poll, and forwards the client's `Authorization` header, so the plugin shows a warning when the relay doesn't confirm the secret
 - You can reset your device ID anytime from the settings menu
+
+#### When the reader is offline
+
+E-readers sleep, turn WiFi off and stop the MCP server to save battery, so the reader is often away when you ask your AI app something. The relay then answers for it: the app keeps its tools and is told that the reader is offline and when it was last connected, instead of getting an error. Nothing from your books is involved in that answer.
+
+#### Offline memory
+
+Offline memory is optional and off by default. Turn it on in **Settings → Network → MCP server → Offline memory**, and your reader keeps a copy of what you are reading on the relay, so connected AI apps can still discuss it while the reader is asleep or away.
+
+- **Save my place, highlights and notes**: the book's title and author, where you are, the table of contents, and your highlights and notes
+- **Also save the pages around my place**: additionally the text of the page you are on, 2 pages before it and 10 after
+- **Off**: nothing is saved, and a copy saved earlier is deleted
+
+While you read with WiFi on, the reader updates the copy about once a minute, also while the MCP server is off. It also saves when you close the book and when the MCP server stops, for example because the reader goes to sleep. It never turns WiFi on by itself. If you read with WiFi off, the copy is updated the next time WiFi is on.
+
+When the reader is offline, the AI app gets answers from the copy for reading context, book metadata, the saved pages and search within them. Every such answer says that it comes from a saved copy, when it was saved and which pages it covers. Turning pages and adding highlights or notes need the reader itself. As soon as the reader is back online, answers come from the reader again.
+
+The relay stores the copy encrypted, so that opening it takes one of your connected AI apps, and deletes it 30 days after its last update (you can choose 1 or 7 days). An app you connect later can read the copy from the next save on. The [privacy policy](PRIVACY.md) has the details.
+
+> [!NOTE]
+> Offline memory needs a relay that supports it. The menu entry only shows up when the relay offers it.
 
 #### Privacy
 

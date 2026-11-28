@@ -68,7 +68,9 @@ local MCP_NAME_SOURCE = {
 }
 
 local INSTRUCTIONS = "Access to the book the user is reading in KOReader on their e-reader. "
-    .. "Start with get_reading_context to see the current book, page and selection."
+    .. "Start with get_reading_context to see the current book, page and selection. "
+    .. "A result that starts with [Reader offline] means the e-reader is asleep or away: tell the user, "
+    .. "and if it says the answer comes from a saved copy, say that it may be out of date."
 
 local function contains(list, value)
     for _, v in ipairs(list) do
@@ -271,6 +273,17 @@ function MCPProtocol:handleInitialize(id, params)
         serverInfo = self.serverInfo,
         instructions = INSTRUCTIONS,
     })
+end
+
+-- What a relay needs to keep the server's shape while the reader is offline:
+-- the tool and prompt lists, the instructions and the server info
+function MCPProtocol:manifest()
+    return {
+        tools = self.tools and self.tools:list() or nil,
+        prompts = self.prompts and self.prompts:list() or nil,
+        instructions = INSTRUCTIONS,
+        serverInfo = self.serverInfo,
+    }
 end
 
 -- Handle a client notification (no response is sent)

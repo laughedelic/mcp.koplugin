@@ -23,6 +23,7 @@
 --]]
 
 local json = require("json")
+local rapidjson = require("rapidjson")
 local logger = require("logger")
 local socket = require("socket")
 local ssl = require("ssl")
@@ -68,6 +69,11 @@ local MCPRelay = {
     onFatalError = nil,        -- function(message) - the relay client stopped retrying (rejected credentials, no secure randomness, insecure URL)
     onWarning = nil,           -- function(message) - something the user should know, but the connection still works
     onEvent = nil,             -- function(event) - a notice from the relay, e.g. {event = "app_connected", name = "Claude"}
+    getManifest = nil,         -- function() -> table - tool list, prompts and instructions, sent at registration so the relay can keep answering while the reader is offline
+    onOfflineMemory = nil,     -- function(limits_or_nil) - what the relay offers for offline memory ({maxBytes, maxRetentionDays}), after each registration
+
+    -- Offline memory limits reported by the relay at registration (nil: not offered)
+    offline_memory = nil,
 
     -- TLS: verify the relay's certificate chain and host name (setting
     -- mcp_relay_tls_verify = false turns this off, e.g. for a self-signed
@@ -572,8 +578,45 @@ function MCPRelay:parseHttpResponse(raw_response)
     return response
 end
 
+-- The TLS context for relay connections: built (and the CA bundle loaded)
+-- once, then reused
+-- @return context, or nil and an error message
+function MCPRelay:getTlsContext()
+    local verify = self.tls_verify and true or false
+    if self._ssl_ctx and self._ssl_ctx_verify == verify then
+        return self._ssl_ctx
+    end
+    local ssl_params = {
+        mode = "client",
+        protocol = "any",
+        options = { "all", "no_sslv3" },
+    }
+    if verify then
+        local cafile, capath = self:findCACertificates()
+        if not cafile and not capath then
+            return nil, "TLS: no CA certificate bundle found to verify the relay"
+        end
+        ssl_params.verify = { "peer", "fail_if_no_peer_cert" }
+        ssl_params.cafile = cafile
+        ssl_params.capath = capath
+    else
+        ssl_params.verify = "none"
+    end
+    local ctx, ctx_err = ssl.newcontext(ssl_params)
+    if not ctx then
+        return nil, "SSL wrap failed: " .. tostring(ctx_err)
+    end
+    self._ssl_ctx, self._ssl_ctx_verify = ctx, verify
+    return ctx
+end
+
 -- Non-blocking HTTP request using LuaSocket + UIManager scheduling
-function MCPRelay:httpRequestAsync(request_url, method, body, callback, extra_headers)
+-- @param options optional table:
+--   detached = true: the request belongs to no relay session, so it also runs
+--     (and keeps running) while the relay client is stopped
+--   timeout: seconds to wait for the response (default: request_timeout)
+function MCPRelay:httpRequestAsync(request_url, method, body, callback, extra_headers, options)
+    options = options or {}
     local UIManager = require("ui/uimanager")
     local parsed = self:parseUrl(request_url)
     local is_https = parsed.scheme == "https"
@@ -592,7 +635,8 @@ function MCPRelay:httpRequestAsync(request_url, method, body, callback, extra_he
         ssl_sock = nil,
         response_buffer = {},
         start_time = start_time,
-        timeout_at = start_time + self.request_timeout,
+        timeout_at = start_time + (options.timeout or self.request_timeout),
+        detached = options.detached,
         connect_timeout_at = start_time + self.connect_timeout,
     }
 
@@ -642,7 +686,7 @@ function MCPRelay:httpRequestAsync(request_url, method, body, callback, extra_he
     local poll_socket
     poll_socket = function()
         -- Check if relay was stopped
-        if not self.running then
+        if not self.running and not state.detached then
             cleanup(false, { code = nil, body = "", error = "Relay stopped" })
             return
         end
@@ -673,36 +717,13 @@ function MCPRelay:httpRequestAsync(request_url, method, body, callback, extra_he
                 if is_https then
                     state.phase = "handshake"
                     -- Wrap socket with SSL
-                    -- Build the TLS context (and load the CA bundle) once,
-                    -- not on every poll
-                    local verify = self.tls_verify and true or false
-                    if not self._ssl_ctx or self._ssl_ctx_verify ~= verify then
-                        local ssl_params = {
-                            mode = "client",
-                            protocol = "any",
-                            options = { "all", "no_sslv3" },
-                        }
-                        if verify then
-                            local cafile, capath = self:findCACertificates()
-                            if not cafile and not capath then
-                                on_error("TLS: no CA certificate bundle found to verify the relay")
-                                return
-                            end
-                            ssl_params.verify = { "peer", "fail_if_no_peer_cert" }
-                            ssl_params.cafile = cafile
-                            ssl_params.capath = capath
-                        else
-                            ssl_params.verify = "none"
-                        end
-                        local ctx, ctx_err = ssl.newcontext(ssl_params)
-                        if not ctx then
-                            on_error("SSL wrap failed: " .. tostring(ctx_err))
-                            return
-                        end
-                        self._ssl_ctx, self._ssl_ctx_verify = ctx, verify
+                    local ctx, ctx_err = self:getTlsContext()
+                    if not ctx then
+                        on_error(ctx_err)
+                        return
                     end
 
-                    local ssl_sock, wrap_err = ssl.wrap(state.sock, self._ssl_ctx)
+                    local ssl_sock, wrap_err = ssl.wrap(state.sock, ctx)
                     if not ssl_sock then
                         on_error("SSL wrap failed: " .. tostring(wrap_err))
                         return
@@ -745,13 +766,19 @@ function MCPRelay:httpRequestAsync(request_url, method, body, callback, extra_he
         if state.phase == "sending" then
             -- Send HTTP request
             local active_sock = state.ssl_sock or state.sock
-            local request_str = self:buildHttpRequest(method, parsed, body, extra_headers)
+            state.request_str = state.request_str or self:buildHttpRequest(method, parsed, body, extra_headers)
 
-            local sent, err = active_sock:send(request_str)
+            -- A large request may go out in several pieces: continue after
+            -- the last byte the socket accepted
+            local sent, err, sent_so_far = active_sock:send(state.request_str, (state.sent_bytes or 0) + 1)
             if sent then
                 state.phase = "receiving"
-            elseif err == "timeout" or err == "wantwrite" then
+                state.request_str = nil
+            elseif err == "timeout" or err == "wantwrite" or err == "wantread" then
                 -- Would block, continue polling
+                if type(sent_so_far) == "number" and sent_so_far > (state.sent_bytes or 0) then
+                    state.sent_bytes = sent_so_far
+                end
             else
                 on_error("Send failed: " .. tostring(err))
                 return
@@ -770,6 +797,13 @@ function MCPRelay:httpRequestAsync(request_url, method, body, callback, extra_he
 
                 if data and #data > 0 then
                     table.insert(state.response_buffer, data)
+                end
+
+                if err ~= "closed" and data and #data > 0
+                    and MCPRelay.responseIsComplete(table.concat(state.response_buffer)) then
+                    -- Everything the headers announced is here
+                    cleanup(true, self:parseHttpResponse(table.concat(state.response_buffer)))
+                    return
                 end
 
                 if err == "closed" then
@@ -794,8 +828,102 @@ function MCPRelay:httpRequestAsync(request_url, method, body, callback, extra_he
 end
 
 -- HTTP request entry point
-function MCPRelay:httpRequest(request_url, method, body, callback, extra_headers)
-    self:httpRequestAsync(request_url, method, body, callback, extra_headers)
+function MCPRelay:httpRequest(request_url, method, body, callback, extra_headers, options)
+    self:httpRequestAsync(request_url, method, body, callback, extra_headers, options)
+end
+
+-- A short, blocking HTTP request, for the moments when nothing scheduled
+-- runs any more (the reader is going to sleep). Same TLS checks as the
+-- non-blocking path.
+-- @param timeout seconds allowed for the whole exchange (keep it small)
+-- @return response table ({code, headers, body} or {error})
+function MCPRelay:httpRequestBlocking(request_url, method, body, extra_headers, timeout)
+    local parsed = self:parseUrl(request_url)
+    local deadline = socket.gettime() + (timeout or 4)
+    -- Time left for the next step
+    local function remaining()
+        return math.max(0.05, deadline - socket.gettime())
+    end
+    local sock = socket.tcp()
+    local function fail(err)
+        pcall(function() sock:close() end)
+        logger.warn("MCP Relay: Blocking request failed:", err)
+        return { code = nil, body = "", error = err }
+    end
+    sock:settimeout(remaining())
+    local ok, err = sock:connect(parsed.host, parsed.port)
+    if not ok then
+        return fail("Connect failed: " .. tostring(err))
+    end
+    if parsed.scheme == "https" then
+        local ctx, ctx_err = self:getTlsContext()
+        if not ctx then
+            return fail(ctx_err)
+        end
+        local ssl_sock, wrap_err = ssl.wrap(sock, ctx)
+        if not ssl_sock then
+            return fail("SSL wrap failed: " .. tostring(wrap_err))
+        end
+        sock = ssl_sock
+        sock:sni(parsed.host)
+        sock:settimeout(remaining())
+        local handshake_ok, handshake_err = sock:dohandshake()
+        if not handshake_ok then
+            return fail("SSL handshake failed: " .. tostring(handshake_err))
+        end
+        if self.tls_verify and not MCPRelay.certificateMatchesHost(sock:getpeercertificate(), parsed.host) then
+            return fail("TLS: the relay's certificate is not valid for " .. tostring(parsed.host))
+        end
+    end
+    sock:settimeout(remaining())
+    local sent, send_err = sock:send(self:buildHttpRequest(method, parsed, body, extra_headers))
+    if not sent then
+        return fail("Send failed: " .. tostring(send_err))
+    end
+    sock:settimeout(remaining())
+    -- Read the headers, then exactly the announced body: waiting for the
+    -- server to close the connection could take the whole timeout
+    local lines = {}
+    local content_length
+    while true do
+        local line, line_err = sock:receive("*l")
+        if not line then
+            return fail("Receive error: " .. tostring(line_err))
+        end
+        if line == "" then
+            break
+        end
+        table.insert(lines, line)
+        local length = line:match("^[Cc]ontent%-[Ll]ength:%s*(%d+)")
+        if length then
+            content_length = tonumber(length)
+        end
+    end
+    local response_body, body_err, partial
+    if content_length then
+        response_body, body_err, partial = sock:receive(content_length)
+    else
+        response_body, body_err, partial = sock:receive("*a")
+    end
+    pcall(function() sock:close() end)
+    if not response_body and content_length then
+        logger.warn("MCP Relay: Blocking request body cut short:", body_err)
+    end
+    return self:parseHttpResponse(table.concat(lines, "\r\n") .. "\r\n\r\n" .. (response_body or partial or ""))
+end
+
+-- Whether a raw HTTP response has arrived in full, going by its
+-- Content-Length (so there is no need to wait for the connection to close)
+function MCPRelay.responseIsComplete(raw)
+    local header_end = raw:find("\r\n\r\n", 1, true)
+    if not header_end then
+        return false
+    end
+    local length = raw:sub(1, header_end + 1):match("\r\n[Cc]ontent%-[Ll]ength:%s*(%d+)\r\n")
+    if not length then
+        return false
+    end
+    return #raw - (header_end + 3) >= tonumber(length)
 end
 
 -- HTTP POST helper
@@ -900,7 +1028,21 @@ function MCPRelay:register(callback)
         version = PLUGIN_VERSION,
     }
 
-    local payload = json.encode(payload_data)
+    -- The tool list, so the relay can keep the AI app's tools in place and
+    -- say "the reader is offline" while this device sleeps. Encoded like the
+    -- MCP responses are, so a relay that replays it sends the same JSON.
+    local payload
+    local ok_manifest, manifest = pcall(function() return self.getManifest and self.getManifest() end)
+    if ok_manifest and type(manifest) == "table" then
+        payload_data.manifest = manifest
+        local ok_encode, encoded = pcall(rapidjson.encode, payload_data)
+        if ok_encode and type(encoded) == "string" then
+            payload = encoded
+        else
+            payload_data.manifest = nil
+        end
+    end
+    payload = payload or json.encode(payload_data)
 
     logger.info("MCP Relay: Registering with relay at", register_url,
         is_first_registration and "(first time)" or "(reconnection)")
@@ -969,6 +1111,21 @@ function MCPRelay:register(callback)
         -- Relays that support one-time pairing codes say so; older ones
         -- still sign clients in with the device ID and passcode
         self.pairing_codes_supported = data.pairingCodesSupported == true
+
+        -- Relays that can keep an encrypted copy of what is being read say so,
+        -- with their limits
+        local limits = data.offlineMemory
+        if type(limits) == "table" and type(limits.maxBytes) == "number" and limits.maxBytes > 0 then
+            self.offline_memory = {
+                maxBytes = limits.maxBytes,
+                maxRetentionDays = type(limits.maxRetentionDays) == "number" and limits.maxRetentionDays or 30,
+            }
+        else
+            self.offline_memory = nil
+        end
+        if self.onOfflineMemory then
+            pcall(self.onOfflineMemory, self.offline_memory)
+        end
 
         -- Save the public URL and token endpoint
         self.public_url = data.relayUrl or (self.relay_url .. "/mcp")
@@ -1039,6 +1196,66 @@ function MCPRelay:deviceApiRequest(method, path, body, callback)
         end
         callback(true, data)
     end, self:getDeviceHeaders())
+end
+
+-- Call a device endpoint without a running relay session: needs only the
+-- device's credentials, which the relay keeps between sessions. Used for
+-- offline memory, which is also saved while the MCP server is off.
+-- @param options optional table:
+--   headers: extra request headers
+--   blocking = true: wait for the answer (short timeout) instead of scheduling
+--   timeout: seconds for the whole request
+--   credentials: {relay_url, device_id, device_secret} to use instead of the
+--     current ones (to clean up after a device ID reset)
+-- callback(ok, data_or_error_message, http_status)
+function MCPRelay:detachedDeviceRequest(method, path, body, callback, options)
+    options = options or {}
+    callback = callback or function() end
+    local credentials = options.credentials or {}
+    local relay_url = credentials.relay_url or self.relay_url
+    local device_id = credentials.device_id or self.device_id
+    local device_secret = credentials.device_secret or self.device_secret
+    if not device_id or not device_secret then
+        callback(false, "This device is not registered with the relay yet.")
+        return
+    end
+    -- The device secret only ever goes over HTTPS
+    if not self:isSecureRelayUrl(relay_url) then
+        callback(false, "The relay URL must use https://")
+        return
+    end
+    local headers = {
+        ["X-Device-Id"] = device_id,
+        ["Authorization"] = "Device " .. device_secret,
+    }
+    for name, value in pairs(options.headers or {}) do
+        headers[name] = value
+    end
+    local function finish(response)
+        if not response or not response.code then
+            callback(false, "Couldn't reach the relay: " .. tostring(response and response.error or "no response"))
+            return
+        end
+        local ok, data = pcall(json.decode, response.body or "")
+        if not ok or type(data) ~= "table" then
+            data = nil
+        end
+        if response.code ~= 200 then
+            local message = data and data.error or ("Relay error " .. tostring(response.code))
+            if type(message) == "table" then
+                message = message.message or ("Relay error " .. tostring(response.code))
+            end
+            callback(false, tostring(message), response.code)
+            return
+        end
+        callback(true, data or {}, 200)
+    end
+    if options.blocking then
+        finish(self:httpRequestBlocking(relay_url .. path, method, body, headers, options.timeout))
+    else
+        self:httpRequest(relay_url .. path, method, body, finish, headers,
+            { detached = true, timeout = options.timeout or 30 })
+    end
 end
 
 -- Ask the relay for a one-time pairing code (6 digits, single use, short-lived)
@@ -1359,7 +1576,12 @@ function MCPRelay:start()
     self._registering = false
     self._polling = false
     self._sending_response = false
-    self._active_requests = {} -- Clear any stale requests
+    -- Clear any stale requests, but keep detached ones that are under way
+    for id, state in pairs(self._active_requests) do
+        if not state.detached then
+            self._active_requests[id] = nil
+        end
+    end
 
     -- Register with relay
     self:register(function(success, err)
@@ -1396,15 +1618,21 @@ function MCPRelay:stop()
 
     -- Cancel any active requests (they will clean up on next poll)
     -- Note: The requests will check self.running and clean up gracefully
+    -- Detached requests (offline memory) belong to no session and carry on
+    local detached = {}
     for id, state in pairs(self._active_requests) do
-        logger.dbg("MCP Relay: Cancelling active request", id)
-        if state.ssl_sock then
-            pcall(function() state.ssl_sock:close() end)
-        elseif state.sock then
-            pcall(function() state.sock:close() end)
+        if state.detached then
+            detached[id] = state
+        else
+            logger.dbg("MCP Relay: Cancelling active request", id)
+            if state.ssl_sock then
+                pcall(function() state.ssl_sock:close() end)
+            elseif state.sock then
+                pcall(function() state.sock:close() end)
+            end
         end
     end
-    self._active_requests = {}
+    self._active_requests = detached
 
     -- Notify status change
     if self.onStatusChange then
