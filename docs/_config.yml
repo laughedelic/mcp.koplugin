@@ -1,0 +1,18 @@
+# Built by GitHub Pages' own Jekyll (see .github/workflows/pages.yml).
+# index.html and mocks/ are plain static files; the Markdown pages use _layouts/docs.html.
+# Every link on the site is relative, so it works under any base path.
+title: KOReader MCP
+description: Talk about the book you're reading in KOReader with the AI app you already use.
+repo: https://github.com/laughedelic/mcp.koplugin
+markdown: kramdown
+kramdown:
+  input: GFM
+  hard_wrap: false
+defaults:
+  - scope:
+      path: ""
+      type: pages
+    values:
+      layout: docs
+exclude:
+  - README.md

@@ -1,0 +1,13 @@
+# The docs sidebar, in order. "page" is the Markdown file's name without .md.
+- page: setup
+  title: Set up
+- page: using
+  title: Using it
+- page: settings
+  title: Settings and modes
+- page: privacy
+  title: Privacy and security
+- page: troubleshooting
+  title: Troubleshooting
+- page: reference
+  title: Reference

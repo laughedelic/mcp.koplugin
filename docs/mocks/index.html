@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Landing page options | KOReader MCP</title>
+  <link rel="icon" href="../assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../assets/site.css">
+  <style>
+    .options { display: grid; gap: 2.5rem; margin: 2rem 0 0; padding: 0; list-style: none; }
+    .options li { padding-top: 1rem; border-top: 2px solid var(--ink); }
+    .options h2 { margin: 0 0 0.5rem; font-size: 1.6rem; }
+    .options p { max-width: 42rem; margin: 0 0 0.7rem; }
+    .options dl { display: grid; grid-template-columns: max-content minmax(0, 42rem); gap: 0.3rem 1rem; margin: 0 0 1rem; }
+    .options dt { font-weight: 600; }
+    .options dd { margin: 0; }
+  </style>
+</head>
+<body>
+
+<header class="site-header wrap">
+  <a class="brand" href="../"><img src="../assets/icon.svg" alt="" width="32" height="32">KOReader MCP</a>
+  <nav class="site-nav" aria-label="Site">
+    <a href="../setup.html">Docs</a>
+    <a href="https://github.com/laughedelic/mcp.koplugin">GitHub</a>
+  </nav>
+</header>
+
+<main class="wrap prose" style="max-width: var(--wrap)">
+  <h1>Landing page options</h1>
+  <p class="lede">Three directions for the landing page. A is the one that is built out and live as the home page. B and C are mocks of the first screen only. This page and the mocks aren't linked from the site and can be deleted once a direction is settled.</p>
+
+  <ol class="options">
+    <li>
+      <h2>A. Two screens</h2>
+      <p>An e-reader and a phone side by side. Three tabs each play a short conversation, and the reader reacts: the selected word, a new highlight, a page turn with an e-ink flash.</p>
+      <dl>
+        <dt>Good at</dt><dd>Showing the whole idea in ten seconds, including that the reader and the phone are linked.</dd>
+        <dt>Costs</dt><dd>The most moving parts. Each conversation is a list in the page's HTML and the script is about 90 lines, so changes are edits to text.</dd>
+      </dl>
+      <p><a class="button button--primary" href="../">Open A</a></p>
+    </li>
+    <li>
+      <h2>B. Margin notes</h2>
+      <p>No devices. One page of a book, with the questions and answers written in its margin next to the passages they're about.</p>
+      <dl>
+        <dt>Good at</dt><dd>Feeling like reading. Fully static, no script, nothing to keep in sync except the text.</dd>
+        <dt>Costs</dt><dd>Doesn't show that it happens across two devices, or that the assistant can act on the reader.</dd>
+      </dl>
+      <p><a class="button" href="margin-notes.html">Open B</a></p>
+    </li>
+    <li>
+      <h2>C. The page is the reader</h2>
+      <p>The whole landing page is an e-reader screen: greyscale, dithered, and turned a page at a time with a refresh flash.</p>
+      <dl>
+        <dt>Good at</dt><dd>Being memorable to people who love e-ink. Matches the icon.</dd>
+        <dt>Costs</dt><dd>Paging hides content behind clicks and is worse for search engines and skimming. More of a toy than an explanation.</dd>
+      </dl>
+      <p><a class="button" href="paged-reader.html">Open C</a></p>
+    </li>
+  </ol>
+</main>
+
+</body>
+</html>

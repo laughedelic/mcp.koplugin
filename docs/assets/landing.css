@@ -1,0 +1,444 @@
+/* Landing page: hero, the reader + phone demo, and the sections below it. */
+
+.hero {
+  display: grid;
+  gap: 2.5rem 3rem;
+  align-items: center;
+  padding-block: clamp(1.5rem, 5vw, 3.5rem) 1rem;
+}
+.hero h1 {
+  margin: 0 0 1.4rem;
+  font-size: clamp(2.5rem, 6.4vw, 4.4rem);
+  line-height: 1.04;
+  letter-spacing: -0.02em;
+}
+.hero h1 span {
+  display: block;
+}
+.hero .lede {
+  max-width: 34rem;
+  margin: 0 0 1.8rem;
+  font-size: 1.2rem;
+}
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+@media (min-width: 72rem) {
+  .hero {
+    grid-template-columns: minmax(19rem, 1fr) minmax(0, 43.5rem);
+  }
+  .hero h1 {
+    font-size: clamp(2.5rem, 4.1vw, 3.5rem);
+  }
+}
+
+/* Demo */
+
+.demo {
+  --reader-w: 24rem;
+  --phone-w: 17.5rem;
+  width: min(100%, calc(var(--reader-w) + var(--phone-w) + 2rem));
+  margin-inline: auto;
+}
+.demo-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+.demo-tabs button {
+  padding: 0.45rem 0.95rem;
+  border: 1.5px solid var(--ink);
+  border-radius: 2rem;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.98rem;
+  cursor: pointer;
+}
+.demo-tabs button:hover {
+  background: var(--panel);
+}
+.demo-tabs button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--paper);
+}
+.demo-stage {
+  display: flex;
+  align-items: flex-start;
+  gap: 2rem;
+}
+.demo-caption {
+  min-height: 3.2em;
+  margin: 1.25rem 0 0;
+  color: var(--ink-soft);
+}
+
+/* E-reader. Sizes inside the screen are in cqw so the page lays out the same at any width. */
+
+.reader {
+  flex: 0 1 var(--reader-w);
+  min-width: 0;
+  margin: 0;
+  padding: 4.5% 4.5% 9%;
+  border-radius: 1.4rem;
+  background: var(--bezel);
+  box-shadow: 0 1.2rem 2.5rem -1.2rem rgb(0 0 0 / 0.45);
+}
+.reader-screen {
+  container-type: inline-size;
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+  background: var(--eink);
+  color: var(--eink-ink);
+}
+.reader-page {
+  display: none;
+  flex-direction: column;
+  height: 100%;
+  padding: 6cqw 6.5cqw 0;
+  font-family: var(--serif);
+  font-size: 3.75cqw;
+  line-height: 1.5;
+}
+.reader[data-page="1"] .reader-page[data-p="1"],
+.reader[data-page="3"] .reader-page[data-p="3"] {
+  display: flex;
+}
+.reader-page h3 {
+  margin: 0 0 1.5em;
+  font-size: 1.25em;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+}
+.reader-page h3 small {
+  display: block;
+  font-size: 0.8em;
+  font-weight: 400;
+  font-style: italic;
+}
+.reader-text {
+  /* A whole number of lines, so the last line is never cut in half. */
+  height: 25.5em;
+  overflow: hidden;
+  text-align: justify;
+  hyphens: auto;
+}
+.reader-text p {
+  margin: 0;
+  text-indent: 1.4em;
+}
+.reader-text p:first-child {
+  text-indent: 0;
+}
+.reader-status {
+  margin-top: auto;
+  padding-block: 1.6cqw 2cqw;
+  font-family: var(--sans);
+  font-size: 2.9cqw;
+  text-align: center;
+}
+.reader-status::before {
+  content: "";
+  display: block;
+  height: 0.5cqw;
+  margin-bottom: 1.2cqw;
+  background: linear-gradient(to right, var(--eink-ink) var(--progress, 1%), #b9b9b1 0);
+}
+
+/* Selected text is inverted, a saved highlight is dithered grey, like on the device. */
+.reader mark {
+  background: none;
+  color: inherit;
+}
+.reader[data-mark="select"] .mark-select {
+  background: var(--eink-ink);
+  color: var(--eink);
+}
+.reader[data-mark="highlight"] .mark-highlight {
+  background: conic-gradient(rgb(28 28 28 / 0.42) 25%, transparent 0) 0 0 / 0.8cqw 0.8cqw;
+}
+.reader[data-mark="highlight"] .mark-highlight::after {
+  content: "✎";
+  position: absolute;
+  right: 1.2cqw;
+  margin-top: -0.1em;
+  font-size: 1.1em;
+  text-indent: 0;
+}
+.reader-page {
+  position: relative;
+}
+
+/* One full e-ink refresh when the page changes. */
+.reader.is-refreshing .reader-screen {
+  animation: eink-refresh 0.5s steps(1, end);
+}
+@keyframes eink-refresh {
+  0% {
+    filter: invert(1);
+  }
+  45% {
+    filter: invert(0) contrast(0.6);
+  }
+  70% {
+    filter: none;
+  }
+}
+
+/* Phone with a generic chat app */
+
+.phone {
+  --chat-bg: #ffffff;
+  --chat-ink: #1c1c1c;
+  --chat-soft: #6b6b73;
+  --chat-bubble: #f0f0f3;
+  --chat-accent: #2a3fe0;
+  flex: 0 0 var(--phone-w);
+  display: flex;
+  flex-direction: column;
+  height: 34rem;
+  margin-top: 2.5rem;
+  border: 0.5rem solid var(--bezel);
+  border-radius: 2.3rem;
+  background: var(--chat-bg);
+  color: var(--chat-ink);
+  font-size: 0.86rem;
+  line-height: 1.42;
+  overflow: hidden;
+  box-shadow: 0 1.2rem 2.5rem -1.2rem rgb(0 0 0 / 0.45);
+}
+@media (prefers-color-scheme: dark) {
+  .phone {
+    --chat-bg: #1d1d22;
+    --chat-ink: #ececf1;
+    --chat-soft: #a2a2ad;
+    --chat-bubble: #2b2b33;
+    --chat-accent: #5364f5;
+  }
+}
+.phone-bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0.9rem 1rem 0.7rem;
+  border-bottom: 1px solid var(--chat-bubble);
+  font-weight: 600;
+}
+.phone-bar small {
+  color: var(--chat-soft);
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+.phone-bar small::before {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 0.5em;
+  margin-right: 0.4em;
+  border-radius: 50%;
+  background: #2f9e60;
+}
+.chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 0;
+  padding: 0.9rem 0.8rem;
+}
+.chat ol {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chat ol[hidden] {
+  display: none;
+}
+.chat li {
+  max-width: 92%;
+}
+.chat .you {
+  align-self: flex-end;
+  padding: 0.5rem 0.8rem;
+  border-radius: 1.1rem 1.1rem 0.3rem 1.1rem;
+  background: var(--chat-accent);
+  color: #fff;
+}
+.chat .ai {
+  padding: 0.55rem 0.8rem;
+  border-radius: 1.1rem 1.1rem 1.1rem 0.3rem;
+  background: var(--chat-bubble);
+}
+.chat .tool {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--chat-soft);
+  font-size: 0.8rem;
+}
+.chat .tool::before {
+  content: "✓";
+  display: grid;
+  place-items: center;
+  width: 1.25em;
+  height: 1.25em;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  font-size: 0.8em;
+}
+.chat .tool.is-working::before {
+  content: "";
+  border-top-color: transparent;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+/* The player hides each line, then shows them in turn. */
+.chat li.is-waiting {
+  display: none;
+}
+.chat li.is-in {
+  animation: msg-in 0.25s ease-out;
+}
+@keyframes msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.4rem);
+  }
+}
+.phone-input {
+  margin: 0 0.8rem 0.9rem;
+  padding: 0.55rem 0.9rem;
+  border: 1px solid var(--chat-bubble);
+  border-radius: 2rem;
+  color: var(--chat-soft);
+}
+
+@media (max-width: 46rem) {
+  .demo-stage {
+    flex-direction: column;
+    align-items: center;
+    gap: 1.25rem;
+  }
+  .reader {
+    flex-basis: auto;
+    width: min(100%, 23rem);
+  }
+  .phone {
+    flex-basis: auto;
+    width: min(100%, 20rem);
+    height: 27rem;
+    margin-top: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reader.is-refreshing .reader-screen,
+  .chat li.is-in,
+  .chat .tool.is-working::before {
+    animation: none;
+  }
+}
+
+/* Sections below the demo */
+
+.dither-rule {
+  height: 0.75rem;
+  margin-block: clamp(3rem, 8vw, 5rem) 0;
+  border: 0;
+  background: conic-gradient(var(--ink) 25%, transparent 0) 0 0 / 4px 4px;
+  opacity: 0.55;
+  -webkit-mask-image: linear-gradient(to right, #000, transparent 85%);
+  mask-image: linear-gradient(to right, #000, transparent 85%);
+}
+
+.section {
+  padding-top: clamp(3rem, 8vw, 5rem);
+}
+.section > h2 {
+  margin: 0 0 1.5rem;
+  font-size: clamp(1.8rem, 4vw, 2.5rem);
+}
+.section > p {
+  max-width: 40rem;
+}
+
+.asks {
+  columns: 2 22rem;
+  column-gap: 3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--serif);
+  font-size: 1.3rem;
+  font-style: italic;
+  line-height: 1.35;
+}
+.asks li {
+  break-inside: avoid;
+  padding-block: 0.7rem;
+  border-top: 1px solid var(--rule);
+}
+
+.reasons {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1.5rem 3rem;
+}
+.reasons h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+.reasons p {
+  margin: 0;
+}
+
+.steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1.5rem 3rem;
+  margin: 0 0 2rem;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+.steps li {
+  counter-increment: step;
+  padding-top: 0.8rem;
+  border-top: 2px solid var(--ink);
+}
+.steps li::before {
+  content: counter(step);
+  display: block;
+  font-family: var(--serif);
+  font-size: 2.2rem;
+  line-height: 1.1;
+}
+.steps h3 {
+  margin: 0.3rem 0 0.4rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+.steps p {
+  margin: 0;
+}
+
+.notes {
+  max-width: 44rem;
+  margin: 0;
+  padding-left: 1.2rem;
+}
+.notes li {
+  margin-bottom: 0.7rem;
+}

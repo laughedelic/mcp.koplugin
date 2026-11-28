@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KOReader MCP: talk about your book with the AI app you already use</title>
+  <meta name="description" content="A KOReader plugin that connects your e-reader to Claude, Gemini and other AI apps. The assistant sees the page you're on, searches the book, and saves highlights and notes.">
+  <meta property="og:title" content="KOReader MCP">
+  <meta property="og:description" content="Read on e-ink. Talk it over on your phone.">
+  <meta property="og:image" content="https://laughedelic.github.io/mcp.koplugin/assets/icon.png">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="preload" href="assets/fonts/literata.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="assets/site.css">
+  <link rel="stylesheet" href="assets/landing.css">
+</head>
+<body>
+
+<header class="site-header wrap wrap--wide">
+  <a class="brand" href="./"><img src="assets/icon.svg" alt="" width="32" height="32">KOReader MCP</a>
+  <nav class="site-nav" aria-label="Site">
+    <a href="setup.html">Docs</a>
+    <a href="https://github.com/laughedelic/mcp.koplugin">GitHub</a>
+  </nav>
+</header>
+
+<main class="wrap wrap--wide">
+
+  <div class="hero">
+    <div>
+      <h1><span>Read on e-ink.</span> <span>Talk it over on your phone.</span></h1>
+      <p class="lede">KOReader MCP is a plugin that connects your e-reader to the AI app you already use. The assistant can see the page you're on, search the book, and save highlights and notes back into it.</p>
+      <p class="hero-actions">
+        <a class="button button--primary" href="setup.html">Set it up</a>
+        <a class="button" href="using.html">See what you can ask</a>
+      </p>
+    </div>
+
+    <!--
+      The demo. Each <ol data-scenario> is one conversation; assets/demo.js plays whichever one
+      its tab selects. data-*-before is how the reader looks when the conversation starts,
+      data-*-after is how it looks once the assistant's last action finishes.
+      data-page picks a .reader-page, data-mark is "none", "select" or "highlight".
+    -->
+    <section class="demo" data-demo aria-label="Example conversations">
+      <div class="demo-tabs">
+        <button type="button" data-play="ask-word" aria-pressed="true">Ask about a word</button>
+        <button type="button" data-play="save-note" aria-pressed="false">Save a note</button>
+        <button type="button" data-play="find-place" aria-pressed="false">Find a place</button>
+      </div>
+
+      <div class="demo-stage">
+        <figure class="reader" data-page="1" data-mark="select" aria-label="An e-reader showing Moby-Dick in KOReader">
+          <div class="reader-screen">
+            <div class="reader-page" data-p="1" style="--progress: 2%">
+              <h3><small>Chapter 1</small> Loomings</h3>
+              <div class="reader-text" lang="en">
+                <p>Call me Ishmael. Some years ago—never mind how long precisely—having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world. It is a way I have of driving off the spleen and regulating the circulation. Whenever I find myself growing grim about the mouth; <mark class="mark-highlight">whenever it is a damp, drizzly November in my soul</mark>; whenever I find myself involuntarily pausing before coffin warehouses, and bringing up the rear of every funeral I meet; and especially whenever my <mark class="mark-select">hypos</mark> get such an upper hand of me, that it requires a strong moral principle to prevent me from deliberately stepping into the street, and methodically knocking people’s hats off—then, I account it high time to get to sea as soon as I can. This is my substitute for pistol and ball. With a philosophical flourish Cato throws himself upon his sword; I quietly take to the ship. There is nothing surprising in this. If they but knew it, almost all men in their degree, some time or other, cherish very nearly the same feelings towards the ocean with me.</p>
+                <p>There now is your insular city of the Manhattoes, belted round by wharves as Indian isles by coral reefs—commerce surrounds it with her surf.</p>
+              </div>
+              <div class="reader-status">Loomings &nbsp; 12 / 624 &nbsp; 2%</div>
+            </div>
+
+            <div class="reader-page" data-p="3" style="--progress: 5%">
+              <h3><small>Chapter 3</small> The Spouter-Inn</h3>
+              <div class="reader-text" lang="en">
+                <p>Entering that gable-ended Spouter-Inn, you found yourself in a wide, low, straggling entry with old-fashioned wainscots, reminding one of the bulwarks of some condemned old craft. On one side hung a very large oil painting so thoroughly besmoked, and every way defaced, that in the unequal crosslights by which you viewed it, it was only by diligent study and a series of systematic visits to it, and careful inquiry of the neighbors, that you could any way arrive at an understanding of its purpose. Such unaccountable masses of shades and shadows, that at first you almost thought some ambitious young artist, in the time of the New England hags, had endeavored to delineate chaos bewitched. But by dint of much and earnest contemplation, and oft repeated ponderings, and especially by throwing open the little window towards the back of the entry, you at last come to the conclusion that such an idea, however wild, might not be altogether unwarranted.</p>
+              </div>
+              <div class="reader-status">The Spouter-Inn &nbsp; 31 / 624 &nbsp; 5%</div>
+            </div>
+          </div>
+        </figure>
+
+        <div class="phone" aria-label="A chat app on a phone">
+          <div class="phone-bar">Assistant <small>KOReader connected</small></div>
+          <div class="chat">
+
+            <ol id="ask-word" data-scenario
+                data-page-before="1" data-mark-before="select"
+                data-page-after="1" data-mark-after="select"
+                data-caption="Select text on the reader and the assistant knows what “this” means. No typing on e-ink.">
+              <li class="you">What does the word I selected mean?</li>
+              <li class="tool">Checked your current page</li>
+              <li class="ai">You selected “hypos”, in the first chapter of Moby-Dick. It’s 19th-century slang, short for hypochondria, which back then meant a fit of low spirits. Ishmael is saying that when the gloom gets the better of him, it’s time to go to sea.</li>
+            </ol>
+
+            <ol id="save-note" data-scenario hidden
+                data-page-before="1" data-mark-before="none"
+                data-page-after="1" data-mark-after="highlight"
+                data-caption="Highlights and notes are saved into the book itself, next to the ones you make by hand.">
+              <li class="you">Highlight the “November in my soul” line and note that this is why he goes to sea.</li>
+              <li class="tool">Added a highlight and a note</li>
+              <li class="ai">Done. I highlighted “whenever it is a damp, drizzly November in my soul” and added the note: “Ishmael’s reason for going to sea. It’s his cure for gloom.”</li>
+            </ol>
+
+            <ol id="find-place" data-scenario hidden
+                data-page-before="1" data-mark-before="none"
+                data-page-after="3" data-mark-after="none"
+                data-caption="The assistant can search the whole book and turn the reader to the right page.">
+              <li class="you">Take me to where Queequeg first shows up.</li>
+              <li class="tool">Searched the book</li>
+              <li class="tool">Turned to page 31</li>
+              <li class="ai">He first appears in chapter 3, “The Spouter-Inn”, as the harpooneer Ishmael is told he’ll be sharing a bed with. Your reader is now at the start of that chapter.</li>
+            </ol>
+
+          </div>
+          <div class="phone-input" aria-hidden="true">Ask about your book</div>
+        </div>
+      </div>
+
+      <p class="demo-caption" aria-live="polite">Select text on the reader and the assistant knows what “this” means. No typing on e-ink.</p>
+    </section>
+  </div>
+
+  <hr class="dither-rule">
+
+  <section class="section">
+    <h2>Things you can ask</h2>
+    <ul class="asks">
+      <li>“What does this passage mean?”</li>
+      <li>“Summarize the chapter so far. No spoilers.”</li>
+      <li>“Who is this character again?”</li>
+      <li>“Translate the paragraph I selected.”</li>
+      <li>“Highlight that and add a note with what we just worked out.”</li>
+      <li>“Take me back to where the letter is first mentioned.”</li>
+      <li>“What was going on in the world when this was written?”</li>
+      <li>“Quiz me on what I read today.”</li>
+    </ul>
+  </section>
+
+  <section class="section">
+    <h2>Why the phone, and not the reader itself</h2>
+    <div class="reasons">
+      <div>
+        <h3>Typing on e-ink is slow</h3>
+        <p>Your reader is great for reading and bad for writing. Keep the book there and have the conversation on a real keyboard.</p>
+      </div>
+      <div>
+        <h3>Your chats stay in one place</h3>
+        <p>The conversation happens in the AI app you already use, with its history and memory, so a talk about chapter 3 can pick up again at chapter 20.</p>
+      </div>
+      <div>
+        <h3>No API keys</h3>
+        <p>You add the reader to your AI app as a connector and pair it once. There is nothing to configure on the reader beyond turning the server on.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>Three steps to set up</h2>
+    <ol class="steps">
+      <li>
+        <h3>Install the plugin</h3>
+        <p>Get it from KOReader’s App Store plugin, or copy the folder onto your reader.</p>
+      </li>
+      <li>
+        <h3>Turn on the MCP server</h3>
+        <p>It’s a checkbox in KOReader’s Tools menu. The reader then shows an address and how to sign in.</p>
+      </li>
+      <li>
+        <h3>Add it to your AI app</h3>
+        <p>Paste the address into Claude or Gemini as a connector, sign in, and ask about your book.</p>
+      </li>
+    </ol>
+    <p><a class="button" href="setup.html">Read the setup guide</a></p>
+  </section>
+
+  <section class="section">
+    <h2>Good to know</h2>
+    <ul class="notes">
+      <li>Your reader has to be awake and on Wi-Fi, with the book open, while you chat.</li>
+      <li>Tested with Claude and Gemini. Other apps that can connect to a remote MCP server should work too.</li>
+      <li>By default, requests travel through a small open-source relay that passes them along and doesn’t store your books, highlights or notes. You can <a href="privacy.html">run your own</a>.</li>
+      <li>This is early software from one developer. It’s open source, and <a href="https://github.com/laughedelic/mcp.koplugin/issues">bug reports are welcome</a>.</li>
+    </ul>
+  </section>
+
+</main>
+
+<footer class="site-footer wrap wrap--wide">
+  <ul>
+    <li><a href="setup.html">Docs</a></li>
+    <li><a href="https://github.com/laughedelic/mcp.koplugin">Plugin on GitHub</a></li>
+    <li><a href="https://github.com/laughedelic/koreader-mcp-cloud-relay">Relay on GitHub</a></li>
+    <li><a href="https://koreader.rocks">KOReader</a></li>
+  </ul>
+  <p>An independent open-source project, not affiliated with KOReader or with any AI app. The book in the demo is <cite>Moby-Dick</cite>, which is in the public domain.</p>
+</footer>
+
+<script src="assets/demo.js"></script>
+</body>
+</html>

@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Mock C: The page is the reader | KOReader MCP</title>
+  <link rel="icon" href="../assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../assets/site.css">
+  <style>
+    /* Mock C. The whole landing page is an e-reader: greyscale, dithered, turned a page at a time. */
+    html, body { height: 100%; }
+    body {
+      display: flex;
+      flex-direction: column;
+      background: #cfcfc8;
+      color: var(--eink-ink);
+    }
+    .mock-bar {
+      padding: 0.5rem var(--gutter);
+      background: var(--eink-ink);
+      color: var(--eink);
+      font-size: 0.9rem;
+    }
+    .mock-bar a { color: inherit; }
+
+    .device {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      width: min(100%, 46rem);
+      margin: clamp(0rem, 2vw, 1.5rem) auto;
+      padding: clamp(0rem, 2vw, 1.4rem) clamp(0rem, 2vw, 1.4rem) clamp(0rem, 4vw, 3rem);
+      border-radius: clamp(0rem, 2vw, 1.6rem);
+      background: var(--bezel);
+    }
+    .screen {
+      position: relative;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 32rem;
+      background: var(--eink);
+      overflow: hidden;
+    }
+    .screen.is-refreshing { animation: refresh 0.45s steps(1, end); }
+    @keyframes refresh {
+      0% { filter: invert(1); }
+      45% { filter: contrast(0.6); }
+      70% { filter: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .screen.is-refreshing { animation: none; }
+    }
+
+    .page {
+      flex: 1;
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      padding: clamp(1.5rem, 6vw, 4rem);
+      font-family: var(--serif);
+      font-size: clamp(1.05rem, 2.2vw, 1.25rem);
+      line-height: 1.55;
+      overflow: auto;
+    }
+    .page.is-current { display: flex; }
+    .page h1 {
+      margin: 1.5rem 0 1rem;
+      font-size: clamp(2.2rem, 7vw, 3.6rem);
+      line-height: 1.05;
+    }
+    .page h2 { margin: 0 0 1.5rem; font-size: clamp(1.6rem, 4.5vw, 2.2rem); }
+    .page p { margin: 0 0 1rem; max-width: 34rem; }
+    .page a { color: inherit; }
+    .page img { width: 6rem; height: 6rem; border-radius: 1.3rem; }
+    .dither { height: 1rem; margin: 1.5rem 0; background: conic-gradient(#1c1c1c 25%, transparent 0) 0 0 / 4px 4px; }
+
+    .talk { display: grid; gap: 0.8rem; margin: 0 0 1rem; padding: 0; list-style: none; font-family: var(--sans); font-size: 0.95em; }
+    .talk li { max-width: 30rem; padding: 0.6rem 0.9rem; border: 2px solid #1c1c1c; }
+    .talk .you {
+      justify-self: end;
+      background: #1c1c1c;
+      color: var(--eink);
+    }
+    .talk .did {
+      padding: 0;
+      border: 0;
+      font-size: 0.9em;
+      background: conic-gradient(rgb(28 28 28 / 0.35) 25%, transparent 0) 0 0 / 4px 4px;
+      justify-self: start;
+    }
+    .steps-c { margin: 0 0 1rem; padding-left: 1.3em; }
+    .steps-c li { margin-bottom: 0.8rem; padding-left: 0.3em; }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.5rem 1rem 0.7rem;
+      border-top: 2px solid #1c1c1c;
+      font-size: 0.9rem;
+    }
+    .status button {
+      padding: 0.35rem 0.9rem;
+      border: 2px solid #1c1c1c;
+      border-radius: 0;
+      background: none;
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+    }
+    .status button:disabled { opacity: 0.35; cursor: default; }
+    .status .where { flex: 1; text-align: center; }
+  </style>
+</head>
+<body>
+
+<div class="mock-bar">Mock C, "The page is the reader". <a href="./">Compare the options</a></div>
+
+<div class="device">
+  <main class="screen" data-screen>
+
+    <section class="page is-current" aria-label="Title page">
+      <img src="../assets/icon.svg" alt="">
+      <h1>Read on e-ink. Talk it over on your phone.</h1>
+      <p>KOReader MCP is a plugin that connects your e-reader to the AI app you already use.</p>
+      <div class="dither"></div>
+      <p>Turn the page to see how.</p>
+    </section>
+
+    <section class="page" aria-label="An example conversation">
+      <h2>You ask from your phone</h2>
+      <ul class="talk">
+        <li class="you">What does the word I selected mean?</li>
+        <li class="did">&nbsp;Checked the page on your reader&nbsp;</li>
+        <li>You selected “hypos”, in the first chapter of Moby-Dick. It’s 19th-century slang for a fit of low spirits.</li>
+        <li class="you">Highlight that sentence and add a note.</li>
+        <li class="did">&nbsp;Saved a highlight and a note in the book&nbsp;</li>
+      </ul>
+      <p>The assistant sees the page you’re on, searches the book, and saves highlights and notes into it.</p>
+    </section>
+
+    <section class="page" aria-label="Setup">
+      <h2>Three steps to set up</h2>
+      <ol class="steps-c">
+        <li><strong>Install the plugin</strong> from KOReader’s App Store plugin, or copy the folder onto your reader.</li>
+        <li><strong>Turn on the MCP server</strong> in the Tools menu.</li>
+        <li><strong>Add it to your AI app</strong> as a connector. Claude and Gemini are tested.</li>
+      </ol>
+      <p><a href="../setup.html">Read the setup guide</a></p>
+    </section>
+
+    <section class="page" aria-label="Links">
+      <h2>Where next</h2>
+      <p><a href="../setup.html">Set it up</a></p>
+      <p><a href="../using.html">See what you can ask</a></p>
+      <p><a href="../privacy.html">Privacy and security</a></p>
+      <p><a href="https://github.com/laughedelic/mcp.koplugin">The code on GitHub</a></p>
+      <div class="dither"></div>
+      <p>An independent open-source project, not affiliated with KOReader or with any AI app.</p>
+    </section>
+
+    <nav class="status" aria-label="Pages">
+      <button type="button" data-turn="-1">Back</button>
+      <span class="where" data-where aria-live="polite">Page 1 of 4</span>
+      <button type="button" data-turn="1">Next page</button>
+    </nav>
+  </main>
+</div>
+
+<script>
+  (function () {
+    var screen = document.querySelector("[data-screen]");
+    var pages = Array.prototype.slice.call(screen.querySelectorAll(".page"));
+    var where = screen.querySelector("[data-where]");
+    var buttons = screen.querySelectorAll("[data-turn]");
+    var current = 0;
+
+    function go(to) {
+      if (to < 0 || to >= pages.length) return;
+      pages[current].classList.remove("is-current");
+      current = to;
+      pages[current].classList.add("is-current");
+      where.textContent = "Page " + (current + 1) + " of " + pages.length;
+      buttons[0].disabled = current === 0;
+      buttons[1].disabled = current === pages.length - 1;
+      screen.classList.remove("is-refreshing");
+      void screen.offsetWidth;
+      screen.classList.add("is-refreshing");
+    }
+
+    buttons.forEach(function (button) {
+      button.addEventListener("click", function () { go(current + Number(button.dataset.turn)); });
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "ArrowRight") go(current + 1);
+      if (event.key === "ArrowLeft") go(current - 1);
+    });
+    buttons[0].disabled = true;
+  })();
+</script>
+</body>
+</html>
