@@ -502,10 +502,13 @@ function MCPResources:getBookmarks()
                 page = item.page,
                 chapter = item.chapter,
                 datetime = item.datetime,
+                color = item.color,
+                style = item.drawer,
             }
 
             if item.note and item.note ~= "" then
                 bookmark.note = item.note
+                bookmark.note_format = item.note_format
                 table.insert(bookmarks.notes, bookmark)
             else
                 table.insert(bookmarks.highlights, bookmark)

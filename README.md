@@ -161,7 +161,7 @@ The plugin provides these callable tools:
 | `read_pages`          | Read text from specific pages or chapters                                    | `pages` (e.g., "5" or "10-15"), `chapter` (index)                          |
 | `search_book`         | Search for text in the book                                                  | `query`, `case_sensitive` (optional)                                       |
 | `goto_page`           | Navigate to a specific page                                                  | `page`                                                                     |
-| `annotate`            | Add highlight or note to text                                                | `note` (optional), `text` (optional), `start` (optional), `end` (optional) |
+| `annotate`            | Add highlight or note to text (EPUB, FB2, PDF, DjVu...)                      | `note`, `note_format`, `text`, `start`, `end`, `if_note_exists` (all optional) |
 
 #### Tool Annotations
 
