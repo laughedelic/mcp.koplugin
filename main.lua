@@ -31,6 +31,7 @@ local MCPResources = require("mcp_resources")
 local MCPTools = require("mcp_tools")
 local MCPPrompts = require("mcp_prompts")
 local MCPRelay = require("mcp_relay")
+local MCPMemory = require("mcp_memory")
 
 -- Module-level state to persist across plugin instance recreation
 -- (when switching between file browser and reader)
@@ -138,10 +139,33 @@ function MCP:init()
                 text = T(_("The cloud relay connection stopped:\n%1\n\nIf the relay rejected the credentials, reset the device ID in the MCP server settings (Settings → Network → MCP server) to register again."), message),
             })
         end
+        -- The relay gets the tool list at registration, so it can keep
+        -- answering ("the reader is offline") while this device sleeps
+        shared_state.relay.getManifest = function()
+            return shared_state.protocol:manifest()
+        end
+
+        -- Offline memory (optional): keeps a saved copy on the relay up to date
+        MCPMemory:setup {
+            relay = shared_state.relay,
+            tools = shared_state.tools,
+            is_remote_mode = function()
+                return G_reader_settings:readSetting("mcp_server_mode", "remote") == "remote"
+            end,
+            on_change = function()
+                MCP:refreshSettingsMenu(shared_state.settings_menu_instance)
+            end,
+        }
+        shared_state.relay.onOfflineMemory = function(limits)
+            MCPMemory:onRegistered(limits)
+        end
+
         shared_state.relay.onEvent = function(event)
             if event.event ~= "app_connected" then
                 return
             end
+            -- The new app can only read a copy saved after it connected
+            MCPMemory:onAppConnected()
             -- The code is single use, so the pairing dialog has done its job
             if shared_state.pairing_dialog then
                 UIManager:close(shared_state.pairing_dialog)
@@ -545,6 +569,11 @@ function MCP:buildSettingsMenu(existing_items)
                                     local new_url = input_dialog:getInputText()
                                     if new_url and new_url ~= "" then
                                         local old_url = G_reader_settings:readSetting("mcp_relay_url", DEFAULT_RELAY_URL)
+                                        if new_url ~= old_url then
+                                            -- A copy saved on the old relay must not be left behind
+                                            MCPMemory:forget()
+                                            G_reader_settings:delSetting("mcp_memory_limits")
+                                        end
                                         G_reader_settings:saveSetting("mcp_relay_url", new_url)
                                         shared_state.relay:setRelayUrl(new_url)
                                         -- Restart server if running in remote mode and URL changed
@@ -590,6 +619,9 @@ function MCP:buildSettingsMenu(existing_items)
                     text = message,
                     ok_text = _("Reset"),
                     ok_callback = function()
+                        -- A copy saved under the old ID is deleted with the
+                        -- old credentials (now, or when next online)
+                        MCPMemory:forget()
                         -- Clear all credentials
                         G_reader_settings:delSetting("mcp_relay_device_id")
                         G_reader_settings:delSetting("mcp_relay_passcode")
@@ -688,12 +720,178 @@ function MCP:buildSettingsMenu(existing_items)
         end
     end
 
+    -- Offline memory: only where the relay offers it (or it is already on)
+    if mode == "remote" and (MCPMemory:getLimits() or MCPMemory:isOn()) then
+        table.insert(items, {
+            text_func = function()
+                return MCPMemory:isOn() and _("Offline memory: on") or _("Offline memory: off")
+            end,
+            help_text = _("Lets connected AI apps answer questions about your book while the reader is asleep or away, from a copy saved on the relay. Off unless you turn it on."),
+            sub_item_table_func = function()
+                return self:buildMemoryMenu()
+            end,
+            separator = true,
+        })
+    end
+
     table.insert(items, {
         text = _("About MCP server"),
         keep_menu_open = true,
         callback = function()
             self:showAbout()
         end,
+    })
+
+    return items
+end
+
+-- "5 min ago", for the offline memory status line
+local function agoText(timestamp)
+    local seconds = math.max(0, os.time() - timestamp)
+    if seconds < 90 then
+        return _("just now")
+    elseif seconds < 3600 then
+        return T(_("%1 min ago"), math.floor(seconds / 60 + 0.5))
+    elseif seconds < 36 * 3600 then
+        return T(_("%1 h ago"), math.floor(seconds / 3600 + 0.5))
+    end
+    return T(_("%1 days ago"), math.floor(seconds / 86400 + 0.5))
+end
+
+-- One line on what is saved on the relay right now
+function MCP:memoryStatusText()
+    local status = MCPMemory:getStatus()
+    if status and status.result == "delete_pending" then
+        return _("The saved copy is deleted when the reader is next online")
+    end
+    if not MCPMemory:isOn() then
+        return _("Nothing is saved")
+    end
+    if not MCPMemory:getLimits() then
+        return _("This relay doesn't offer offline memory")
+    end
+    if not status then
+        return _("Nothing saved yet")
+    end
+    if status.result == "stored" and status.saved_at then
+        return T(_("Saved %1 (page %2)"), agoText(status.saved_at), status.page or "?")
+    elseif status.result == "no_apps" then
+        return _("Nothing saved yet: connect an AI app first")
+    elseif status.result == "error" and status.message then
+        return T(_("Not saved: %1"), status.message)
+    end
+    return _("Nothing saved yet")
+end
+
+-- The offline memory sub-menu
+function MCP:buildMemoryMenu()
+    local Snapshot = require("mcp_snapshot")
+    local items = {}
+
+    table.insert(items, {
+        text_func = function()
+            return self:memoryStatusText()
+        end,
+        enabled_func = function()
+            return false
+        end,
+        separator = true,
+    })
+
+    -- Turning it on (from off) asks first, and says what is sent where
+    local function choose(scope, touchmenu_instance)
+        local function apply()
+            MCPMemory:setScope(scope)
+            self:refreshSettingsMenu(touchmenu_instance)
+        end
+        if scope == nil or MCPMemory:isOn() then
+            apply()
+            return
+        end
+        local what = scope == "pages"
+            and T(_("the title and author of the book you're reading, your place in it, its table of contents, your highlights and notes, and the text of the pages around your place (%1 before, %2 after)"),
+                Snapshot.PAGES_BEFORE, Snapshot.PAGES_AFTER)
+            or _("the title and author of the book you're reading, your place in it, its table of contents, and your highlights and notes")
+        local ConfirmBox = require("ui/widget/confirmbox")
+        UIManager:show(ConfirmBox:new {
+            text = T(_("Save a copy for when the reader is offline?\n\nYour reader will send the relay %1. Connected AI apps can then answer from that copy while the reader is asleep or away.\n\nThe copy is stored encrypted, and opening it takes one of your connected AI apps. It is replaced as you read and deleted %2 days after its last update. Choose Off to delete it."),
+                what, MCPMemory:getRetentionDays()),
+            ok_text = _("Turn on"),
+            ok_callback = apply,
+        })
+    end
+
+    table.insert(items, {
+        text = _("Off"),
+        help_text = _("Nothing is saved on the relay. Choosing this deletes a copy saved earlier."),
+        radio = true,
+        checked_func = function()
+            return MCPMemory:getScope() == nil
+        end,
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            choose(nil, touchmenu_instance)
+        end,
+    })
+    table.insert(items, {
+        text = _("Save my place, highlights and notes"),
+        help_text = _("Saves the book's title and author, where you are, the table of contents, and your highlights and notes. No text of the book itself."),
+        radio = true,
+        checked_func = function()
+            return MCPMemory:getScope() == "position"
+        end,
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            choose("position", touchmenu_instance)
+        end,
+    })
+    table.insert(items, {
+        text = _("Also save the pages around my place"),
+        help_text = T(_("Also saves the text of the page you're on, %1 pages before it and %2 after, so AI apps can discuss what you just read."),
+            Snapshot.PAGES_BEFORE, Snapshot.PAGES_AFTER),
+        radio = true,
+        checked_func = function()
+            return MCPMemory:getScope() == "pages"
+        end,
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            choose("pages", touchmenu_instance)
+        end,
+        separator = true,
+    })
+
+    -- How long the relay keeps a copy that is no longer updated
+    local retention_items = {}
+    local limits = MCPMemory:getLimits()
+    local max_days = limits and limits.maxRetentionDays or MCPMemory.DEFAULT_RETENTION_DAYS
+    for _, days in ipairs(MCPMemory.RETENTION_CHOICES) do
+        if days <= max_days then
+            table.insert(retention_items, {
+                text = days == 1 and _("1 day") or T(_("%1 days"), days),
+                radio = true,
+                checked_func = function()
+                    return MCPMemory:getRetentionDays() == days
+                end,
+                keep_menu_open = true,
+                callback = function(touchmenu_instance)
+                    MCPMemory:setRetentionDays(days)
+                    if touchmenu_instance then
+                        touchmenu_instance:updateItems()
+                    end
+                end,
+            })
+        end
+    end
+    table.insert(items, {
+        text_func = function()
+            local days = MCPMemory:getRetentionDays()
+            return days == 1 and _("Keep the copy for: 1 day") or T(_("Keep the copy for: %1 days"), days)
+        end,
+        help_text = _("The relay deletes the saved copy this long after its last update, for example when you stop reading the book or turn WiFi off for good."),
+        enabled_func = function()
+            return MCPMemory:isOn()
+        end,
+        sub_item_table = retention_items,
     })
 
     return items
@@ -817,6 +1015,11 @@ function MCP:stopServer()
 
     -- Stop relay if running (remote mode)
     if shared_state.relay_running then
+        -- Offline memory: save what changed and tell the relay the reader is
+        -- going (a short wait, and only if it is turned on)
+        if not shared_state.relay.halted then
+            MCPMemory:leave()
+        end
         self:stopRelay(true) -- silent mode
     end
 
@@ -1630,6 +1833,7 @@ end
 
 -- Auto-start handler
 function MCP:onReaderReady()
+    MCPMemory:onBookOpened()
     if G_reader_settings:isTrue("mcp_server_autostart") and not shared_state.server_running then
         -- Small delay to let the UI settle
         UIManager:scheduleIn(1, function()
@@ -1673,7 +1877,35 @@ Protocol: MCP 2025-03-26]])
     })
 end
 
+-- Offline memory: things that change what a saved copy would hold
+function MCP:onPageUpdate()
+    MCPMemory:markChanged()
+end
+
+function MCP:onPosUpdate()
+    MCPMemory:markChanged()
+end
+
+function MCP:onAnnotationsModified()
+    MCPMemory:annotationsChanged()
+end
+
+function MCP:onDocumentRerendered()
+    MCPMemory:layoutChanged()
+end
+
+-- Offline memory: a chance to save what changed while the reader was offline
+function MCP:onNetworkConnected()
+    MCPMemory:onNetworkAvailable()
+end
+
+function MCP:onResume()
+    MCPMemory:onNetworkAvailable()
+end
+
 function MCP:onCloseDocument()
+    -- Offline memory: save where the user stopped
+    MCPMemory:onBookClosing()
     -- Update UI reference when document changes
     -- The server keeps running, but tools/resources need the new UI
     if shared_state.server_running then
