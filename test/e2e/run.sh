@@ -9,6 +9,9 @@
 # Environment:
 #   KOREADER_VERSION  KOReader release tag (default below)
 #   E2E_WORK_DIR      scratch directory (default: .e2e in the repository)
+#   RELAY_DIR         a koreader-mcp-cloud-relay checkout: also start it with
+#                     `wrangler dev` (needs bun) and test through it
+#   RELAY_URL         an already running relay to test through instead
 set -euo pipefail
 
 KOREADER_VERSION="${KOREADER_VERSION:-v2026.07.2}"
@@ -37,10 +40,32 @@ if [ ! -x "$KO_DIR/lib/koreader/reader.lua" ]; then
     rm -f "$WORK/$ASSET"
 fi
 
-# A virtual display, unless there is a real one
 XVFB_PID=""
-cleanup() { [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true; }
+RELAY_PID=""
+cleanup() {
+    [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null
+    [ -n "$RELAY_PID" ] && kill "$RELAY_PID" 2>/dev/null
+    true
+}
 trap cleanup EXIT
+export NO_PROXY="127.0.0.1,localhost${NO_PROXY:+,$NO_PROXY}"
+
+# A local relay
+if [ -n "${RELAY_DIR:-}" ] && [ -z "${RELAY_URL:-}" ]; then
+    echo "Starting the relay from $RELAY_DIR"
+    (cd "$RELAY_DIR" && bun install --frozen-lockfile >/dev/null)
+    (cd "$RELAY_DIR" && WRANGLER_SEND_METRICS=false exec bunx wrangler dev --port 8787 --ip 127.0.0.1 \
+        >"$WORK/relay.log" 2>&1) &
+    RELAY_PID=$!
+    for _ in $(seq 120); do
+        curl -fs -o /dev/null http://127.0.0.1:8787/ && break
+        sleep 0.5
+    done
+    curl -fs -o /dev/null http://127.0.0.1:8787/ || { echo "The relay did not start; see $WORK/relay.log"; exit 1; }
+    RELAY_URL="http://127.0.0.1:8787"
+fi
+
+# A virtual display, unless there is a real one
 if [ -z "${DISPLAY:-}" ]; then
     display=":$((90 + RANDOM % 100))"
     Xvfb "$display" -screen 0 758x1024x24 -nolisten tcp >/dev/null 2>&1 &
@@ -49,4 +74,5 @@ if [ -z "${DISPLAY:-}" ]; then
     sleep 1
 fi
 
-exec python3 "$REPO/test/e2e/e2e.py" --koreader "$KO_DIR/lib/koreader" --plugin "$REPO" --work "$WORK" "$@"
+python3 "$REPO/test/e2e/e2e.py" --koreader "$KO_DIR/lib/koreader" --plugin "$REPO" --work "$WORK" \
+    ${RELAY_URL:+--relay "$RELAY_URL"} "$@"
