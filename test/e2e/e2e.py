@@ -177,6 +177,16 @@ class KOReader:
             raise RuntimeError("KOReader did not quit on SIGTERM")
         finally:
             self.log.close()
+            # Anything still holding the plugin's port after KOReader quit
+            # (for example a child process that inherited the socket)?
+            ss = subprocess.run(["ss", "-tanpH", f"sport = :{PORT}"], capture_output=True, text=True).stdout
+            if ss.strip():
+                print("   note: sockets on the MCP port after quitting:\n" +
+                      "\n".join("     " + line for line in ss.splitlines()))
+                ps = subprocess.run(["ps", "-o", "pid,ppid,pgid,stat,args", "-g", str(self.proc.pid)],
+                                    capture_output=True, text=True).stdout
+                print("   processes left in KOReader's group:\n" +
+                      "\n".join("     " + line for line in ps.splitlines()))
 
 
 def screenshot(path):
