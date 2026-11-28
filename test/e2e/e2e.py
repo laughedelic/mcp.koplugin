@@ -12,8 +12,11 @@ run.sh downloads KOReader and calls this; see test/e2e/README.md.
 """
 import argparse
 import base64
+import hashlib
+import html
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -22,6 +25,7 @@ import sys
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -49,11 +53,17 @@ class HTTPResult:
         return json.loads(self.body) if self.body else None
 
 
+# Where requests go: the plugin's local server, or a relay (with a token)
+TARGET = {"url": URL, "token": None}
+
+
 def http_post(payload, headers=None, timeout=30):
     data = json.dumps(payload).encode()
-    req = urllib.request.Request(URL, data=data, method="POST")
+    req = urllib.request.Request(TARGET["url"], data=data, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json, text/event-stream")
+    if TARGET["token"]:
+        req.add_header("Authorization", "Bearer " + TARGET["token"])
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     try:
@@ -119,21 +129,21 @@ def port_open():
 
 
 class KOReader:
-    def __init__(self, koreader_dir, plugin_dir, work, name):
+    def __init__(self, koreader_dir, plugin_dir, work, name, settings=SETTINGS):
         self.koreader_dir = Path(koreader_dir)
         self.home = work / f"home-{name}"
         self.log_path = work / f"koreader-{name}.log"
         if self.home.exists():
             shutil.rmtree(self.home)
         (self.home / "settings").mkdir(parents=True)
-        (self.home / "settings.reader.lua").write_text(SETTINGS)
+        (self.home / "settings.reader.lua").write_text(settings)
         # Copy, not symlink: KOReader reads the plugin directory name, and a
         # copy is what a real install looks like
         shutil.copytree(plugin_dir, self.home / "plugins" / "mcp.koplugin",
                         ignore=shutil.ignore_patterns(".git", ".github", ".e2e", "test", "scripts", "*.md"))
         self.proc = None
 
-    def start(self, book, timeout=90):
+    def start(self, book, ready=port_open, timeout=90):
         if port_open():
             raise RuntimeError(f"port {PORT} is already in use; is another KOReader running?")
         env = dict(os.environ)
@@ -148,7 +158,7 @@ class KOReader:
         while time.time() < deadline:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"KOReader exited with {self.proc.returncode}; see {self.log_path}")
-            if port_open():
+            if ready():
                 return
             time.sleep(0.5)
         raise RuntimeError(f"MCP server did not start within {timeout}s; see {self.log_path}")
@@ -386,12 +396,152 @@ def run_suite(name, book, args, work):
     return failures
 
 
+# --------------------------------------------------------------------------
+# Through a relay (a local `wrangler dev` of koreader-mcp-cloud-relay)
+# --------------------------------------------------------------------------
+
+def relay_settings(relay, device_id, secret):
+    return f"""return {{
+    ["mcp_server_autostart"] = true,
+    ["mcp_server_mode"] = "remote",
+    ["mcp_server_idle_timeout_minutes"] = 0,
+    ["quickstart_shown_version"] = 999999999999,
+    ["mcp_relay_url"] = "{relay}",
+    ["mcp_relay_device_id"] = "{device_id}",
+    ["mcp_relay_passcode"] = "246810",
+    ["mcp_relay_device_secret"] = "{secret}",
+    ["mcp_relay_device_name"] = "e2e reader",
+}}
+"""
+
+
+def relay_request(relay, path, data=None, headers=None, form=False):
+    """Returns (status, headers, body text). Doesn't follow redirects."""
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
+    body = None
+    if data is not None:
+        body = urllib.parse.urlencode(data).encode() if form else json.dumps(data).encode()
+    req = urllib.request.Request(relay + path, data=body, method="POST" if body is not None else "GET")
+    if body is not None:
+        req.add_header("Content-Type", "application/x-www-form-urlencoded" if form else "application/json")
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    try:
+        with opener.open(req, timeout=30) as r:
+            return r.status, dict(r.headers), r.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read().decode()
+
+
+def b64url(b):
+    return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+
+def oauth_pair(relay, code):
+    """Connect an AI app the way Claude does: dynamic client registration,
+    the sign-in form with a pairing code, PKCE token exchange."""
+    redirect = "http://localhost:9/callback"
+    st, _, body = relay_request(relay, "/oauth/register", {
+        "client_name": "koplugin e2e", "redirect_uris": [redirect], "token_endpoint_auth_method": "none",
+        "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"]})
+    assert st == 201, (st, body)
+    client_id = json.loads(body)["client_id"]
+    verifier = b64url(os.urandom(32))
+    challenge = b64url(hashlib.sha256(verifier.encode()).digest())
+    q = urllib.parse.urlencode({"response_type": "code", "client_id": client_id, "redirect_uri": redirect,
+                                "scope": "mcp:access", "state": "s", "code_challenge": challenge,
+                                "code_challenge_method": "S256"})
+    st, _, page = relay_request(relay, "/authorize?" + q)
+    assert st == 200, (st, page[:500])
+    m = re.search(r'name="oauth_state"\s+value="([^"]+)"', page)
+    assert m, "no oauth_state on the sign-in page"
+    st, h, body = relay_request(relay, "/authorize", {"oauth_state": html.unescape(m.group(1)),
+                                                       "pairing_code": code}, form=True)
+    assert st == 302, (st, body[:500])
+    auth_code = urllib.parse.parse_qs(urllib.parse.urlparse(h["Location"]).query)["code"][0]
+    st, _, body = relay_request(relay, "/oauth/token", {
+        "grant_type": "authorization_code", "code": auth_code, "redirect_uri": redirect,
+        "client_id": client_id, "code_verifier": verifier}, form=True)
+    assert st == 200, (st, body)
+    return json.loads(body)["access_token"]
+
+
+RELAY_TESTS = [t_discover, t_legacy_initialize, t_tools_list, t_metadata, t_reading_context, t_read_pages,
+               t_search, t_goto_page, t_highlight, t_add_note, t_overwrite_needs_answer]
+
+
+def run_relay_suite(relay, book, args, work):
+    name = "relay"
+    print(f"\n== {name}: {book.name} through {relay}")
+    sdr = book.with_suffix(".sdr")
+    if sdr.exists():
+        shutil.rmtree(sdr)
+    device_id = "e2e-" + os.urandom(4).hex()
+    secret = b64url(os.urandom(32))
+    device_headers = {"X-Device-Id": device_id, "Authorization": "Device " + secret}
+    ko = KOReader(args.koreader, args.plugin, work, name, relay_settings(relay, device_id, secret))
+    failures = []
+    pairing = {}
+
+    def registered():
+        # The plugin has registered once the relay hands it a pairing code
+        st, _, body = relay_request(relay, "/pairing-code", {}, device_headers)
+        if st == 200:
+            pairing["code"] = json.loads(body)["code"]
+            return True
+        return False
+
+    try:
+        t0 = time.time()
+        ko.start(book, ready=registered)
+        print(f"   KOReader up, registered with the relay ({time.time() - t0:.1f}s)")
+        TARGET["url"] = relay + "/mcp"
+        TARGET["token"] = oauth_pair(relay, pairing["code"])
+        print("   ok    paired an app with a pairing code (OAuth + PKCE)")
+        ctx = {"work": work, "name": name}
+        for test in RELAY_TESTS:
+            try:
+                test(ctx)
+                print(f"   ok    {test.__name__[2:]}")
+            except Exception as e:  # noqa: BLE001
+                failures.append(test.__name__)
+                print(f"   FAIL  {test.__name__[2:]}: {e}")
+                if os.environ.get("E2E_VERBOSE"):
+                    traceback.print_exc()
+        TARGET["token"] = None
+        res = http_post({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, {"MCP-Protocol-Version": LEGACY})
+        if res.status == 401:
+            print("   ok    no_token_rejected")
+        else:
+            failures.append("no_token_rejected")
+            print(f"   FAIL  no_token_rejected: HTTP {res.status} {res.body[:300]}")
+    except Exception as e:  # noqa: BLE001
+        failures.append("startup")
+        print(f"   FAIL  startup: {e}")
+    finally:
+        TARGET["url"], TARGET["token"] = URL, None
+        try:
+            ko.stop()
+        except Exception as e:  # noqa: BLE001
+            failures.append("quit")
+            print(f"   FAIL  quit: {e}")
+    if failures:
+        print(f"   KOReader log: {ko.log_path}")
+        lines = ko.log_path.read_text(errors="replace").splitlines()
+        print("\n".join("   | " + line for line in lines[-40:]))
+    return failures
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--koreader", required=True, help="directory with KOReader's reader.lua")
     p.add_argument("--plugin", required=True, help="plugin directory (the repository root)")
     p.add_argument("--work", required=True, help="scratch directory for books, homes and logs")
-    p.add_argument("--only", choices=sorted(SUITES))
+    p.add_argument("--only", choices=sorted(SUITES) + ["relay"])
+    p.add_argument("--relay", help="also run the relay suite against this relay URL (e.g. http://127.0.0.1:8787)")
     p.add_argument("--keep-running", action="store_true", help="leave KOReader up after the tests until Enter")
     args = p.parse_args()
 
@@ -400,8 +550,14 @@ def main():
     subprocess.run([sys.executable, str(HERE / "make_books.py"), str(books)], check=True, stdout=subprocess.DEVNULL)
 
     failed = {}
-    for name in ([args.only] if args.only else sorted(SUITES)):
-        f = run_suite(name, books / f"alice.{name}", args, work)
+    names = [args.only] if args.only else sorted(SUITES) + (["relay"] if args.relay else [])
+    for name in names:
+        if name == "relay":
+            if not args.relay:
+                p.error("--only relay needs --relay URL")
+            f = run_relay_suite(args.relay.rstrip("/"), books / "alice.epub", args, work)
+        else:
+            f = run_suite(name, books / f"alice.{name}", args, work)
         if f:
             failed[name] = f
     print()

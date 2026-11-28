@@ -23,7 +23,11 @@ if [ ! -x "$KO_DIR/lib/koreader/reader.lua" ]; then
     echo "Downloading KOReader $KOREADER_VERSION ($ASSET)"
     rm -rf "$KO_DIR" "$WORK/$ASSET"
     if command -v gh >/dev/null && [ -n "${GH_TOKEN:-}" ]; then
-        gh release download "$KOREADER_VERSION" --repo koreader/koreader --pattern "$ASSET" --dir "$WORK"
+        gh release download "$KOREADER_VERSION" --repo koreader/koreader --pattern "$ASSET" --dir "$WORK" || {
+            echo "Recent KOReader releases:"; gh release list --repo koreader/koreader -L 8
+            gh release view --repo koreader/koreader --json tagName,assets --jq '.tagName, .assets[].name'
+            exit 1
+        }
     else
         curl -fL --retry 3 -o "$WORK/$ASSET" \
             "https://github.com/koreader/koreader/releases/download/$KOREADER_VERSION/$ASSET"
