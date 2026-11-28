@@ -51,3 +51,4 @@ jobs:
             .e2e/*.png
             .e2e/books/*.sdr/
           if-no-files-found: ignore
+          include-hidden-files: true
