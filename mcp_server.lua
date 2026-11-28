@@ -29,10 +29,24 @@ function MCPServer:forceReleasePort(port)
     socket.sleep(0.2)
 end
 
+-- A TCP socket for listening, with SO_REUSEADDR so a restart can bind the
+-- port while connections from the last run are still in TIME_WAIT.
+-- socket.tcp() (LuaSocket 3) only creates the OS socket at bind time, so
+-- setoption() on it fails; tcp4() creates it now.
+local function newListenSocket()
+    local sock = (socket.tcp4 or socket.tcp)()
+    if sock then
+        local ok, err = sock:setoption("reuseaddr", true)
+        if not ok then
+            logger.warn("MCP: Could not set SO_REUSEADDR:", err)
+        end
+    end
+    return sock
+end
+
 -- Check if port is available
 function MCPServer:isPortAvailable(port)
-    local test = socket.tcp()
-    test:setoption("reuseaddr", true)
+    local test = newListenSocket()
     local ok = test:bind("0.0.0.0", port)
     test:close()
     return ok ~= nil
@@ -60,14 +74,11 @@ function MCPServer:start(port, onRequest, forceRestart)
     end
 
     -- Create TCP socket
-    local server = socket.tcp()
+    local server = newListenSocket()
     if not server then
         logger.err("Failed to create TCP socket")
         return false
     end
-
-    -- Allow address reuse to avoid "address already in use" errors
-    server:setoption("reuseaddr", true)
 
     -- Bind to all interfaces with retry logic
     local ok, err
@@ -78,8 +89,7 @@ function MCPServer:start(port, onRequest, forceRestart)
         logger.warn("MCP: Bind attempt", i, "failed:", err, "- retrying...")
         server:close()
         self:forceReleasePort(self.port)
-        server = socket.tcp()
-        server:setoption("reuseaddr", true)
+        server = newListenSocket()
     end
     if not ok then
         logger.err("Failed to bind MCP server to port", self.port, ":", err)
