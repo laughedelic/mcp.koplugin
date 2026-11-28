@@ -131,7 +131,7 @@ function MCPTools:getBookContext()
 
     local doc = self.ui.document
     local props = doc:getProps()
-    local current_page = doc:getCurrentPage()
+    local current_page = self.ui:getCurrentPage()
 
     local context = {
         title = props.title or "Unknown",
@@ -404,7 +404,7 @@ function MCPTools:getReadingContext(args)
 
     local doc = self.ui.document
     local props = doc:getProps()
-    local current_page = doc:getCurrentPage()
+    local current_page = self.ui:getCurrentPage()
     local page_count = doc:getPageCount()
 
     -- Build structured context with sections:
@@ -529,7 +529,7 @@ function MCPTools:getBookMetadata(args)
     local doc_settings = DocSettings:open(doc.file)
     if doc_settings then
         metadata.percent_finished = doc_settings:readSetting("percent_finished") or 0
-        metadata.current_page = doc_settings:readSetting("last_page") or doc:getCurrentPage()
+        metadata.current_page = doc_settings:readSetting("last_page") or self.ui:getCurrentPage()
     end
 
     -- Build text representation
@@ -767,7 +767,7 @@ function MCPTools:readPages(args)
 
     -- No valid input provided - give helpful error
     local page_count = doc:getPageCount()
-    local current_page = doc:getCurrentPage()
+    local current_page = self.ui:getCurrentPage()
     return {
         content = {
             { type = "text", text = "Please specify 'pages' (e.g., '5' or '10-15') or 'chapter' (index from TOC).\nCurrent page: " .. current_page .. " of " .. page_count },
