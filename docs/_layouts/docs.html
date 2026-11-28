@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page.title }} | {{ site.title }}</title>
+  <meta name="description" content="{{ page.description | default: site.description | escape }}">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="site-header wrap">
+  <a class="brand" href="./"><img src="assets/icon.svg" alt="" width="32" height="32">{{ site.title }}</a>
+  <nav class="site-nav" aria-label="Site">
+    <a href="setup.html" aria-current="page">Docs</a>
+    <a href="{{ site.repo }}">GitHub</a>
+  </nav>
+</header>
+
+<div class="docs wrap">
+  <nav class="docs-nav" aria-label="Docs">
+    <ol>
+      {%- for item in site.data.nav %}
+      {%- assign file = item.page | append: ".md" %}
+      <li><a href="{{ item.page }}.html"{% if page.name == file %} aria-current="page"{% endif %}>{{ item.title }}</a></li>
+      {%- endfor %}
+    </ol>
+  </nav>
+
+  <main class="prose">
+    <h1>{{ page.title }}</h1>
+    {{ content }}
+    <p class="docs-edit"><a href="{{ site.repo }}/edit/main/docs/{{ page.path }}">Edit this page on GitHub</a></p>
+  </main>
+</div>
+
+<footer class="site-footer wrap">
+  <ul>
+    <li><a href="./">Home</a></li>
+    <li><a href="{{ site.repo }}">Plugin on GitHub</a></li>
+    <li><a href="https://github.com/laughedelic/koreader-mcp-cloud-relay">Relay on GitHub</a></li>
+    <li><a href="{{ site.repo }}/issues">Report a problem</a></li>
+  </ul>
+  <p>An independent open-source project, not affiliated with KOReader or with any AI app.</p>
+</footer>
+
+</body>
+</html>
