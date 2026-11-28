@@ -169,7 +169,7 @@ The plugin provides these callable tools:
 All tools include [MCP annotations](https://modelcontextprotocol.io/docs/concepts/tools#tool-annotations) to help AI assistants understand their behavior:
 
 - `readOnlyHint`: Tools like `get_reading_context`, `get_book_metadata`, `read_pages`, `search_book` are read-only
-- `destructiveHint`: The `annotate` tool modifies the document (false for destructive, but still modifying)
+- `destructiveHint`: The `annotate` tool is marked destructive, because with `if_note_exists = "replace"` it can overwrite an existing note
 - `idempotentHint`: Multiple calls with the same parameters produce the same result
 - `openWorldHint`: Whether the tool interacts with external entities
 

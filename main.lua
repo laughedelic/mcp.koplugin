@@ -614,7 +614,12 @@ function MCP:buildSettingsMenu(existing_items)
 
         table.insert(items, {
             text = _("Connect an AI app"),
-            help_text = _("Shows a one-time 6-digit code. Add the relay URL as a connector in your AI app (Claude, Gemini, …) and enter the code when it asks you to sign in."),
+            help_text_func = function()
+                if shared_state.relay and shared_state.relay.pairing_codes_supported then
+                    return _("Shows a one-time 6-digit code. Add the relay URL as a connector in your AI app (Claude, Gemini, …) and enter the code when it asks you to sign in.")
+                end
+                return _("Shows the device ID and passcode to enter when your AI app asks you to sign in. This relay doesn't support one-time codes, so they keep working until you reset the device ID.")
+            end,
             enabled_func = relay_connected,
             keep_menu_open = true,
             callback = function()

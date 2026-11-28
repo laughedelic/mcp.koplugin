@@ -17,7 +17,7 @@ Requests from your AI app and your e-reader's answers pass through the relay. Th
 | Data | Why | How long |
 | --- | --- | --- |
 | Device ID (made from your device type plus random characters), device name ("KOReader" unless you change it), plugin version, first and last connection times | To route requests to your e-reader | Until you ask for it to be deleted |
-| SHA-256 hashes of your device secret and (for older plugins) your passcode | To authenticate your e-reader | Until you ask for it to be deleted |
+| SHA-256 hashes of your device secret and your legacy passcode | To authenticate your e-reader | Until you ask for it to be deleted |
 | SHA-256 hash of a pairing code and the device it belongs to | To pair an AI app | Until it is used or replaced; it stops working after 10 minutes and is deleted at the next cleanup |
 | AI app registrations (app name and callback URLs, as the app sends them) and OAuth grants and tokens for your device | So connected apps can reach your e-reader | Grants until you disconnect the app from **Connected apps** on the reader; access tokens expire after 1 hour |
 | IP address of a failed pairing attempt, with a counter | To limit guessing of pairing codes | Counts for 10 minutes; deleted at the next cleanup after that |
