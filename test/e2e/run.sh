@@ -14,7 +14,7 @@
 #   RELAY_URL         an already running relay to test through instead
 set -euo pipefail
 
-KOREADER_VERSION="${KOREADER_VERSION:-v2026.07.2}"
+KOREADER_VERSION="${KOREADER_VERSION:-v2026.07.1}"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${E2E_WORK_DIR:-$REPO/.e2e}"
 KO_DIR="$WORK/koreader-$KOREADER_VERSION"
