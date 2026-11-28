@@ -96,12 +96,13 @@ Check the **MCP server status** in the Tools menu for the MCP server address. Us
 
 1. Go to **Settings → Connectors → Add custom connector**, or just us this link: https://claude.ai/settings/connectors?modal=add-custom-connector.
 2. Enter the name (e.g., "KOReader") and the MCP server URL.
-3. Open a new chat and in the ➕ menu you should see the new connector available. You can either add resources to the context, or ask it to use tools to fetch data from your book.
+3. When Claude opens the relay's sign-in page, open **MCP server → Connect an AI app** on the reader and enter the 6-digit code it shows.
+4. Open a new chat and in the ➕ menu you should see the new connector available. You can either add resources to the context, or ask it to use tools to fetch data from your book.
 
 #### Gemini
 
 1. Go to **Settings → Developer mode → Create new** (app).
-2. Paste the MCP server URL (with the cloud relay, it is `https://mcp-relay.laughedelic.workers.dev/mcp`) and follow the pairing step: enter your device ID and passcode on the relay's sign-in page.
+2. Paste the MCP server URL (with the cloud relay, it is `https://mcp-relay.laughedelic.workers.dev/mcp`) and follow the pairing step: open **MCP server → Connect an AI app** on the reader and enter the 6-digit code on the relay's sign-in page.
 3. Start a chat and ask about the book you're reading.
 
 > [!NOTE]
@@ -168,7 +169,7 @@ The plugin provides these callable tools:
 All tools include [MCP annotations](https://modelcontextprotocol.io/docs/concepts/tools#tool-annotations) to help AI assistants understand their behavior:
 
 - `readOnlyHint`: Tools like `get_reading_context`, `get_book_metadata`, `read_pages`, `search_book` are read-only
-- `destructiveHint`: The `annotate` tool modifies the document (false for destructive, but still modifying)
+- `destructiveHint`: The `annotate` tool is marked destructive, because with `if_note_exists = "replace"` it can overwrite an existing note
 - `idempotentHint`: Multiple calls with the same parameters produce the same result
 - `openWorldHint`: Whether the tool interacts with external entities
 
@@ -238,42 +239,42 @@ graph LR
   B --> A
 ```
 
-1. **On first connection**, your e-reader generates a device ID (based on your device type) and a random 6-digit passcode
-2. The passcode is hashed (SHA-256) and sent to the relay — the plaintext passcode never leaves your device
-3. The relay assigns a unique URL for your device
-4. Your e-reader displays the passcode to you (save it!)
-5. You configure your AI assistant with the URL and authenticate via the OAuth login screen using the passcode
-6. AI clients exchange the authorization code for a short-lived access token
+1. **On first connection**, your e-reader generates a device ID (based on your device type) and a random device secret, and registers with the relay
+2. Your e-reader shows the relay URL and a one-time 6-digit **pairing code**
+3. You add the URL as a connector in your AI app and enter the code on the relay's sign-in page
+4. The AI app exchanges the authorization for a short-lived access token; the code is used up
 
 #### Authentication Flow
 
-When you first start the MCP server in remote mode, you'll see:
-- The **relay URL**
-- Your **device ID**
-- Your unique **6-digit passcode**
-- Instructions for connecting your AI assistant
+When you first start the MCP server in remote mode, you'll see the **relay URL** and a **pairing code**. To connect another app later, use **Connect an AI app** in the MCP settings menu (**Settings → Network → MCP server**). Each code works once, for 10 minutes. Once an app signs in, the reader closes the code and tells you which app connected.
+
+**Connected apps** in the same menu lists the AI apps that can reach your reader. Tap one to disconnect it.
 
 The relay uses OAuth 2.1 Authorization Code flow with PKCE, so MCP clients that support OAuth will handle authentication automatically.
 
-> [!TIP]
-> You can view your credentials in the MCP settings menu (**Settings → Network → MCP server**)
+> [!NOTE]
+> With an older or self-hosted relay that doesn't support pairing codes, the plugin shows a device ID and a permanent 6-digit passcode instead, which you enter on the sign-in page.
 
 > [!IMPORTANT]
-> The relay is just a bridge forwarding requests between your e-reader and AI clients. It does not store any book content or personal data. The relay never receives your actual passcode — only its hash.
+> The relay is just a bridge forwarding requests between your e-reader and AI clients. It does not store book content, highlights or notes; it keeps only what it needs to route and authorize requests (see the [privacy policy](PRIVACY.md)).
 
-The relay implementation is open source: [mcp-relay-cloudflare](https://github.com/laughedelic/mcp-relay-cloudflare). You can deploy your own instance for full control. By default, plugin uses the relay I deployed for myself. I'll be sharing it as long as it's within the free tier limits.
+The relay implementation is open source: [koreader-mcp-cloud-relay](https://github.com/laughedelic/koreader-mcp-cloud-relay). You can deploy your own instance for full control. By default, plugin uses the relay I deployed for myself. I'll be sharing it as long as it's within the free tier limits.
 
 #### Security
 
-- **Zero-knowledge passcode**: Passcode is generated locally and only the SHA-256 hash is sent to the relay
-- **OAuth 2.1 Authorization Code + PKCE**: MCP clients authenticate via the /authorize login screen using your device ID + passcode, then exchange a code for a token
+- **One-time pairing codes**: A code works once and expires after 10 minutes; only your e-reader can request one (with its device secret), and the relay limits wrong guesses. Once the reader requests its first pairing code, the old permanent passcode stops working for new sign-ins
+- **OAuth 2.1 Authorization Code + PKCE**: MCP clients authenticate via the /authorize sign-in page, then exchange a code for a token
+- **Revocable**: Disconnect any AI app from **Connected apps** on the reader
 - **Short-lived tokens**: Access tokens expire in 1 hour
 - **Audience validation**: Tokens are bound to your specific device
 - All traffic is encrypted (HTTPS), and the plugin verifies the relay's certificate and host name before sending its credentials. If your e-reader's clock is far off, the check fails; fix the date and time. For a development relay with a self-signed certificate, set `mcp_relay_tls_verify = false` in KOReader's `settings.reader.lua`
 - The relay doesn't store any book content, only forwards authenticated requests
 - **Device secret** (needs an up-to-date relay): Your e-reader also generates a random secret that authenticates its connection to the relay, so knowing your device ID is not enough to receive your requests. The relay never forwards your AI client's access token to the e-reader. An older self-hosted relay ignores the secret, lets anyone who knows the device ID poll, and forwards the client's `Authorization` header, so the plugin shows a warning when the relay doesn't confirm the secret
-- **Brute-force protection** (also needs an up-to-date relay): The relay locks the login for your device after repeated wrong passcodes
-- You can reset your device ID and passcode anytime from the settings menu
+- You can reset your device ID anytime from the settings menu
+
+#### Privacy
+
+See [PRIVACY.md](PRIVACY.md) for what the public relay stores and how to delete it.
 
 ## References
 

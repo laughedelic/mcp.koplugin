@@ -138,6 +138,20 @@ function MCP:init()
                 text = T(_("The cloud relay connection stopped:\n%1\n\nIf the relay rejected the credentials, reset the device ID in the MCP server settings (Settings → Network → MCP server) to register again."), message),
             })
         end
+        shared_state.relay.onEvent = function(event)
+            if event.event ~= "app_connected" then
+                return
+            end
+            -- The code is single use, so the pairing dialog has done its job
+            if shared_state.pairing_dialog then
+                UIManager:close(shared_state.pairing_dialog)
+                shared_state.pairing_dialog = nil
+            end
+            local name = type(event.name) == "string" and event.name ~= "" and event.name or _("An AI app")
+            UIManager:show(InfoMessage:new {
+                text = T(_("%1 is now connected to your reader.\n\nYou can disconnect it any time in MCP server → Connected apps."), name),
+            })
+        end
         shared_state.relay.onWarning = function(message)
             -- Each distinct warning once per run: every reconnect would repeat it
             shared_state.relay_warnings_shown = shared_state.relay_warnings_shown or {}
@@ -174,14 +188,22 @@ function MCP:init()
 
             MCP:refreshSettingsMenu(shared_state.settings_menu_instance)
 
-            if shared_state.suppress_first_registration_dialog then
-                shared_state.suppress_first_registration_dialog = false
+            -- Started from the menu: skip the legacy credentials popup, but
+            -- still show a pairing code, since that's the next step
+            local suppressed = shared_state.suppress_first_registration_dialog
+            shared_state.suppress_first_registration_dialog = false
+            if suppressed and not shared_state.relay.pairing_codes_supported then
                 return
             end
 
-            -- Show QR code and passcode to the user
+            -- Show how to connect an AI app: a one-time pairing code where
+            -- the relay supports it, otherwise the device ID and passcode
             UIManager:scheduleIn(0.5, function()
-                MCP:showFirstRegistrationInfo(device_id, passcode, public_url, token_endpoint)
+                if shared_state.relay.pairing_codes_supported then
+                    MCP:showPairingCode()
+                else
+                    MCP:showFirstRegistrationInfo(device_id, passcode, public_url, token_endpoint)
+                end
             end)
         end)
     end
@@ -264,6 +286,8 @@ function MCP:addToMainMenu(menu_items)
 
     -- Settings sub-menu in Network section
     self.settings_menu_items = self.settings_menu_items or {}
+    -- Relay callbacks refresh the menu without an instance at hand
+    shared_state.menu_owner = self
     self:buildSettingsMenu(self.settings_menu_items)
     menu_items.mcp_settings = {
         text = _("MCP server"),
@@ -298,8 +322,9 @@ function MCP:refreshSettingsMenu(touchmenu_instance)
     if touchmenu_instance then
         shared_state.settings_menu_instance = touchmenu_instance
     end
-    if self.settings_menu_items then
-        self:buildSettingsMenu(self.settings_menu_items)
+    local owner = self.settings_menu_items and self or shared_state.menu_owner
+    if owner and owner.settings_menu_items then
+        owner:buildSettingsMenu(owner.settings_menu_items)
     end
     if touchmenu_instance then
         touchmenu_instance:updateItems()
@@ -597,6 +622,42 @@ function MCP:buildSettingsMenu(existing_items)
             end,
         })
 
+        local relay_connected = function()
+            return shared_state.relay_running and shared_state.relay_connected
+        end
+
+        table.insert(items, {
+            text = _("Connect an AI app"),
+            help_text_func = function()
+                if shared_state.relay and shared_state.relay.pairing_codes_supported then
+                    return _("Shows a one-time 6-digit code. Add the relay URL as a connector in your AI app (Claude, Gemini, …) and enter the code when it asks you to sign in.")
+                end
+                return _("Shows the device ID and passcode to enter when your AI app asks you to sign in. This relay doesn't support one-time codes, so they keep working until you reset the device ID.")
+            end,
+            enabled_func = relay_connected,
+            keep_menu_open = true,
+            callback = function()
+                self:showPairingCode()
+            end,
+        })
+
+        table.insert(items, {
+            text = _("Connected apps"),
+            help_text = _("AI apps that can read your books through the relay. Tap one to disconnect it."),
+            enabled_func = function()
+                return relay_connected() and shared_state.relay.pairing_codes_supported
+            end,
+            keep_menu_open = true,
+            callback = function()
+                self:showConnectedApps()
+            end,
+            separator = not (shared_state.relay and shared_state.relay.pairing_codes_supported),
+        })
+
+        -- The permanent passcode only matters for relays without pairing codes
+        if shared_state.relay and shared_state.relay.pairing_codes_supported then
+            items[#items].separator = true
+        else
         table.insert(items, {
             text_func = function()
                 local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
@@ -624,6 +685,7 @@ function MCP:buildSettingsMenu(existing_items)
             end,
             separator = true,
         })
+        end
     end
 
     table.insert(items, {
@@ -989,8 +1051,10 @@ function MCP:showServerDetails()
         url_widget,
     })
 
-    -- Add device credentials for remote mode
-    if is_remote then
+    local pairing = is_remote and shared_state.relay.pairing_codes_supported
+
+    -- Add device credentials for remote mode (relays without pairing codes)
+    if is_remote and not pairing then
         local device_id = shared_state.relay:getDeviceId()
         local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
 
@@ -1041,30 +1105,48 @@ function MCP:showServerDetails()
         end
     end
 
-    -- Create the dialog with buttons
     local details_dialog
+    local buttons = {}
+    if pairing then
+        table.insert(buttons, {
+            {
+                text = _("Connect an AI app"),
+                callback = function()
+                    UIManager:close(details_dialog)
+                    mcp_self:showPairingCode()
+                end,
+            },
+            {
+                text = _("Connected apps"),
+                callback = function()
+                    UIManager:close(details_dialog)
+                    mcp_self:showConnectedApps()
+                end,
+            },
+        })
+    end
+    table.insert(buttons, {
+        {
+            text = _("Setup Instructions"),
+            callback = function()
+                UIManager:close(details_dialog)
+                mcp_self:showSetupInstructions()
+            end,
+        },
+    })
+    table.insert(buttons, {
+        {
+            text = _("Close"),
+            callback = function()
+                UIManager:close(details_dialog)
+            end,
+        },
+    })
+
     details_dialog = ButtonDialog:new {
         title = title,
         width_factor = 0.9,
-        buttons = {
-            {
-                {
-                    text = _("Setup Instructions"),
-                    callback = function()
-                        UIManager:close(details_dialog)
-                        mcp_self:showSetupInstructions()
-                    end,
-                },
-            },
-            {
-                {
-                    text = _("Close"),
-                    callback = function()
-                        UIManager:close(details_dialog)
-                    end,
-                },
-            },
-        },
+        buttons = buttons,
     }
 
     -- Add the details content to the dialog
@@ -1079,21 +1161,24 @@ function MCP:showSetupInstructions()
     local instructions
 
     if mode == "remote" and shared_state.relay_url then
-        -- Get passcode if available
-        local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
-        local auth_info = ""
-        if passcode then
-            auth_info = _("\n\nDevice credentials:\n" ..
-                "• Device ID: ") .. (shared_state.relay:getDeviceId() or _("(device ID)")) .. _("\n" ..
-                "• Passcode: ") .. passcode
+        local url = shared_state.relay_url
+        if shared_state.relay.pairing_codes_supported then
+            instructions = T(_("To connect an AI app:\n\n" ..
+                "1. In the app, add a custom connector with this URL:\n   %1\n" ..
+                "   Claude: Settings → Connectors → Add custom connector\n" ..
+                "   Gemini: Settings → Developer mode → Create new\n" ..
+                "2. When it asks you to sign in, open MCP server → Connect an AI app here and enter the 6-digit code.\n" ..
+                "3. Start chatting about your book."), url)
+        else
+            local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
+            instructions = T(_("To connect an AI app:\n\n" ..
+                "1. In the app, add a custom connector with this URL:\n   %1\n" ..
+                "2. When it asks you to sign in, enter:\n" ..
+                "   • Device ID: %2\n" ..
+                "   • Passcode: %3\n" ..
+                "3. Start chatting about your book."), url,
+                shared_state.relay:getDeviceId() or "?", passcode or "?")
         end
-
-        instructions = _("To connect an MCP client:\n\n" ..
-            "Claude Desktop/Mobile:\n" ..
-            "1. Open Settings → MCP Servers\n" ..
-            "2. Add new server with URL:\n   ") .. (shared_state.relay_url or "") .. _("/mcp") .. auth_info .. _("\n" ..
-            "3. Save and start chatting!\n\n" ..
-            "You'll be prompted to enter the Device ID and Passcode during login.")
     else
         local ip = shared_state.server:getLocalIP()
         local port = shared_state.server.port
@@ -1109,6 +1194,220 @@ function MCP:showSetupInstructions()
     UIManager:show(InfoMessage:new {
         text = instructions,
     })
+end
+
+-- Format a 6-digit pairing code for reading off the screen: "482 913"
+local function formatPairingCode(code)
+    code = tostring(code or "")
+    if #code == 6 then
+        return code:sub(1, 3) .. " " .. code:sub(4)
+    end
+    return code
+end
+
+-- Show a one-time pairing code for connecting an AI app.
+-- Older relays without pairing codes get the device ID and passcode instead.
+function MCP:showPairingCode()
+    local mcp_self = self
+    local relay = shared_state.relay
+    if not (relay and shared_state.relay_running and shared_state.relay_connected) then
+        UIManager:show(InfoMessage:new {
+            text = _("Start the MCP server with the cloud relay first, then try again."),
+        })
+        return
+    end
+    if not relay.pairing_codes_supported then
+        local passcode = G_reader_settings:readSetting("mcp_relay_passcode")
+        local relay_url = G_reader_settings:readSetting("mcp_relay_url", DEFAULT_RELAY_URL)
+        if passcode then
+            self:showFirstRegistrationInfo(relay:getDeviceId(), passcode, relay:getPublicUrl() or (relay_url .. "/mcp"),
+                relay_url .. "/oauth/token")
+        else
+            UIManager:show(InfoMessage:new {
+                text = _("This relay doesn't support pairing codes. Reset the device ID to get new credentials."),
+            })
+        end
+        return
+    end
+
+    -- A second tap while a request is out would mint a code that replaces
+    -- the one about to be shown
+    if shared_state.pairing_code_requesting then
+        return
+    end
+    shared_state.pairing_code_requesting = true
+    local waiting = InfoMessage:new { text = _("Getting a pairing code…") }
+    UIManager:show(waiting)
+    relay:requestPairingCode(function(ok, data)
+        shared_state.pairing_code_requesting = false
+        UIManager:close(waiting)
+        if not ok then
+            UIManager:show(InfoMessage:new {
+                text = T(_("Couldn't get a pairing code:\n%1"), tostring(data)),
+            })
+            return
+        end
+
+        local width = Screen:getWidth() * 0.8
+        local content = VerticalGroup:new { align = "center" }
+        local function add(widget)
+            table.insert(content, CenterContainer:new {
+                dimen = { w = width, h = widget:getSize().h },
+                widget,
+            })
+        end
+
+        add(TextBoxWidget:new {
+            text = _("In your AI app, add a custom connector with this URL:"),
+            width = Screen:getWidth() * 0.75,
+            face = Font:getFace("cfont", 16),
+            alignment = "center",
+        })
+        table.insert(content, VerticalSpan:new { width = Size.padding.small })
+        add(TextBoxWidget:new {
+            text = data.relayUrl or relay:getPublicUrl() or "",
+            width = Screen:getWidth() * 0.75,
+            face = Font:getFace("cfont", 18),
+            bold = true,
+            alignment = "center",
+        })
+        table.insert(content, VerticalSpan:new { width = Size.padding.large })
+        add(TextBoxWidget:new {
+            text = _("When it asks you to sign in, enter this code:"),
+            width = Screen:getWidth() * 0.75,
+            face = Font:getFace("cfont", 16),
+            alignment = "center",
+        })
+        table.insert(content, VerticalSpan:new { width = Size.padding.small })
+        add(TextWidget:new {
+            text = formatPairingCode(data.code),
+            face = Font:getFace("cfont", 48),
+            bold = true,
+        })
+        table.insert(content, VerticalSpan:new { width = Size.padding.small })
+        local minutes = math.max(1, math.floor((tonumber(data.expiresIn) or 600) / 60))
+        add(TextBoxWidget:new {
+            text = T(_("Works once, for %1 minutes."), minutes),
+            width = Screen:getWidth() * 0.75,
+            face = Font:getFace("cfont", 14),
+            alignment = "center",
+        })
+
+        local dialog
+        dialog = ButtonDialog:new {
+            title = _("Connect an AI app"),
+            width_factor = 0.9,
+            tap_close_callback = function()
+                shared_state.pairing_dialog = nil
+            end,
+            buttons = {
+                {
+                    {
+                        text = _("New code"),
+                        callback = function()
+                            shared_state.pairing_dialog = nil
+                            UIManager:close(dialog)
+                            mcp_self:showPairingCode()
+                        end,
+                    },
+                    {
+                        text = _("Done"),
+                        callback = function()
+                            shared_state.pairing_dialog = nil
+                            UIManager:close(dialog)
+                        end,
+                    },
+                },
+            },
+        }
+        dialog:addWidget(content)
+        if shared_state.pairing_dialog then
+            UIManager:close(shared_state.pairing_dialog)
+        end
+        shared_state.pairing_dialog = dialog
+        UIManager:show(dialog)
+    end)
+end
+
+-- List the AI apps connected through the relay, with a way to disconnect each
+function MCP:showConnectedApps()
+    local mcp_self = self
+    local relay = shared_state.relay
+    if not (relay and shared_state.relay_running and shared_state.relay_connected) then
+        UIManager:show(InfoMessage:new {
+            text = _("Start the MCP server with the cloud relay first, then try again."),
+        })
+        return
+    end
+
+    local waiting = InfoMessage:new { text = _("Loading connected apps…") }
+    UIManager:show(waiting)
+    relay:listConnectedApps(function(ok, data)
+        UIManager:close(waiting)
+        if not ok then
+            UIManager:show(InfoMessage:new {
+                text = T(_("Couldn't load connected apps:\n%1"), tostring(data)),
+            })
+            return
+        end
+        local apps = type(data.apps) == "table" and data.apps or {}
+        if #apps == 0 then
+            UIManager:show(InfoMessage:new {
+                text = _("No AI apps are connected yet.\n\nUse \"Connect an AI app\" to add one."),
+            })
+            return
+        end
+
+        local dialog
+        local buttons = {}
+        for _i, app in ipairs(apps) do
+            local name = tostring(app.name or _("Unknown app"))
+            local when = tonumber(app.connectedAt)
+            local label = when and T(_("%1 · since %2"), name, os.date("%Y-%m-%d", when)) or name
+            table.insert(buttons, {
+                {
+                    text = label,
+                    callback = function()
+                        local ConfirmBox = require("ui/widget/confirmbox")
+                        UIManager:show(ConfirmBox:new {
+                            text = T(_("Disconnect %1?\n\nIt will lose access to your books until you connect it again."), name),
+                            ok_text = _("Disconnect"),
+                            ok_callback = function()
+                                UIManager:close(dialog)
+                                relay:disconnectApp(app.id, function(done, err)
+                                    if done then
+                                        UIManager:show(Notification:new {
+                                            text = T(_("Disconnected %1"), name),
+                                            timeout = 3,
+                                        })
+                                        mcp_self:showConnectedApps()
+                                    else
+                                        UIManager:show(InfoMessage:new {
+                                            text = T(_("Couldn't disconnect %1:\n%2"), name, tostring(err)),
+                                        })
+                                    end
+                                end)
+                            end,
+                        })
+                    end,
+                },
+            })
+        end
+        table.insert(buttons, {
+            {
+                text = _("Close"),
+                callback = function()
+                    UIManager:close(dialog)
+                end,
+            },
+        })
+        dialog = ButtonDialog:new {
+            title = _("Connected apps (tap to disconnect)"),
+            width_factor = 0.9,
+            buttons = buttons,
+        }
+        UIManager:show(dialog)
+    end)
 end
 
 -- Show first registration info with credentials

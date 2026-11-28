@@ -1,0 +1,25 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.laughedelic/koreader",
+  "title": "KOReader",
+  "description": "Read, search and annotate the book open in KOReader on your e-reader, paired with a one-time code.",
+  "version": "0.9.0",
+  "websiteUrl": "https://github.com/laughedelic/mcp.koplugin",
+  "repository": {
+    "url": "https://github.com/laughedelic/mcp.koplugin",
+    "source": "github"
+  },
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/laughedelic/mcp.koplugin/main/assets/icon.png",
+      "mimeType": "image/png",
+      "sizes": ["128x128"]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp-relay.laughedelic.workers.dev/mcp"
+    }
+  ]
+}

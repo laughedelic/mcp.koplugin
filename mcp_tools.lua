@@ -186,6 +186,7 @@ function MCPTools:list()
     -- Get current reading context (returns the book://current/context resource)
     table.insert(tools, {
         name = "get_reading_context",
+        title = "Get reading context",
         description =
         "Get the current reading context including book metadata, current chapter, page text, and selection (if any). This is the primary way to understand what the user is currently reading.",
         inputSchema = {
@@ -213,6 +214,7 @@ function MCPTools:list()
     -- Get book metadata (for clients that don't support resources)
     table.insert(tools, {
         name = "get_book_metadata",
+        title = "Get book metadata",
         description =
         "Get full metadata about the currently open book (title, authors, language, series, description, format, page count, reading progress). Use this for detailed book information. The book://current/metadata resource provides the same data.",
         inputSchema = {
@@ -230,6 +232,7 @@ function MCPTools:list()
     -- Read specific pages or chapters
     table.insert(tools, {
         name = "read_pages",
+        title = "Read pages",
         description =
         "Read text content from specific pages. Use this to explore context beyond the current page, such as reading ahead, going back, or reading a specific chapter.",
         inputSchema = {
@@ -257,6 +260,7 @@ function MCPTools:list()
     -- Search in book
     table.insert(tools, {
         name = "search_book",
+        title = "Search book",
         description = "Search for text in the current book",
         inputSchema = {
             type = "object",
@@ -283,6 +287,7 @@ function MCPTools:list()
     -- Navigate to page
     table.insert(tools, {
         name = "goto_page",
+        title = "Go to page",
         description = "Navigate to a specific page in the book",
         inputSchema = {
             type = "object",
@@ -305,6 +310,7 @@ function MCPTools:list()
     -- Add note or highlight to text
     table.insert(tools, {
         name = "annotate",
+        title = "Highlight or add note",
         description =
         "Add a highlight or note to text. Creates a highlight when note is omitted. Behavior depends on inputs: (1) No text/positions: uses the current UI selection (fails if none). (2) Only start/end positions: annotates that location (e.g. positions from search_book results; reflowable books only, use text for PDF and DjVu). (3) Only text: searches for the text in the book to find its position automatically.",
         inputSchema = {
@@ -344,7 +350,9 @@ function MCPTools:list()
         },
         annotations = {
             readOnlyHint = false,    -- Creates data (annotations)
-            destructiveHint = false, -- Does not delete existing data
+            -- Can replace an existing note (if_note_exists = "replace"), and
+            -- directory reviews expect write tools to say so
+            destructiveHint = true,
             idempotentHint = false,  -- Calling multiple times creates multiple annotations
             openWorldHint = false,
         },

@@ -67,6 +67,7 @@ local MCPRelay = {
     onDeviceSecret = nil,      -- function(secret) - called when a new device secret is generated, to persist it
     onFatalError = nil,        -- function(message) - the relay client stopped retrying (rejected credentials, no secure randomness, insecure URL)
     onWarning = nil,           -- function(message) - something the user should know, but the connection still works
+    onEvent = nil,             -- function(event) - a notice from the relay, e.g. {event = "app_connected", name = "Claude"}
 
     -- TLS: verify the relay's certificate chain and host name (setting
     -- mcp_relay_tls_verify = false turns this off, e.g. for a self-signed
@@ -965,6 +966,10 @@ function MCPRelay:register(callback)
             end
         end
 
+        -- Relays that support one-time pairing codes say so; older ones
+        -- still sign clients in with the device ID and passcode
+        self.pairing_codes_supported = data.pairingCodesSupported == true
+
         -- Save the public URL and token endpoint
         self.public_url = data.relayUrl or (self.relay_url .. "/mcp")
         self.token_endpoint = data.tokenEndpoint or (self.relay_url .. "/oauth/token")
@@ -1002,6 +1007,58 @@ function MCPRelay:register(callback)
             callback(true)
         end
     end, self:getDeviceHeaders())
+end
+
+-- Call a device endpoint of the relay that answers JSON
+-- callback(ok, data_or_error_message)
+function MCPRelay:deviceApiRequest(method, path, body, callback)
+    if not self.connected or not self.device_id or not self.device_secret then
+        callback(false, "The cloud relay is not connected.")
+        return
+    end
+    self:httpRequest(self.relay_url .. path, method, body, function(response)
+        if not response or not response.code then
+            callback(false, "Couldn't reach the relay: " .. tostring(response and response.error or "no response"))
+            return
+        end
+        local ok, data = pcall(json.decode, response.body or "")
+        if not ok or type(data) ~= "table" then
+            data = nil
+        end
+        if response.code ~= 200 then
+            local message = data and data.error or ("Relay error " .. tostring(response.code))
+            if type(message) == "table" then
+                message = message.message or ("Relay error " .. tostring(response.code))
+            end
+            callback(false, tostring(message))
+            return
+        end
+        if not data then
+            callback(false, "Invalid response from the relay")
+            return
+        end
+        callback(true, data)
+    end, self:getDeviceHeaders())
+end
+
+-- Ask the relay for a one-time pairing code (6 digits, single use, short-lived)
+-- callback(ok, {code, expiresIn, relayUrl} or error message)
+function MCPRelay:requestPairingCode(callback)
+    self:deviceApiRequest("POST", "/pairing-code", "{}", callback)
+end
+
+-- List the AI apps (OAuth grants) connected to this device
+-- callback(ok, {apps = {{id, name, connectedAt}, ...}} or error message)
+function MCPRelay:listConnectedApps(callback)
+    self:deviceApiRequest("GET", "/connected-apps", nil, callback)
+end
+
+-- Disconnect an AI app: revokes its grant and tokens at the relay
+function MCPRelay:disconnectApp(app_id, callback)
+    local escaped = tostring(app_id):gsub("[^%w%-_%.~]", function(c)
+        return string.format("%%%02X", string.byte(c))
+    end)
+    self:deviceApiRequest("DELETE", "/connected-apps/" .. escaped, nil, callback)
 end
 
 -- Poll for incoming requests
@@ -1091,6 +1148,16 @@ function MCPRelay:handlePollResponse(response_body)
     -- Handle the request
     if request_data.type == "request" and request_data.requestId then
         self:handleRelayedRequest(request_data)
+    elseif request_data.type == "event" then
+        -- A notice from the relay (such as an AI app finishing sign-in); no reply expected
+        logger.info("MCP Relay: Event", request_data.event)
+        if self.onEvent then
+            local ok_event, err = pcall(self.onEvent, request_data)
+            if not ok_event then
+                logger.warn("MCP Relay: Event handler failed:", err)
+            end
+        end
+        self:scheduleNextPoll()
     elseif request_data.type == "ping" then
         -- Ping from server means connection is healthy, but no real request
         -- Don't count as "empty" since it's just a keep-alive
