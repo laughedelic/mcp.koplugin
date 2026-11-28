@@ -88,6 +88,21 @@ It finds KOReader's folder on Kobo, Kindle, Android and PocketBook, or takes the
 > [!TIP]
 > Hold any menu item to open the help tooltip
 
+#### Gestures and quick actions
+
+The plugin adds two actions you can put on a gesture (**⚙️ Settings → Taps and gestures → Gesture manager**):
+
+- **Toggle MCP server**: start or stop the server
+- **MCP server details**: show the connection details
+
+#### ZenOS
+
+The plugin works with [ZenOS](https://github.com/xZenLabs/zen-os) as is, and fits into its UI:
+
+- With Zen Mode on, the plugin menus are under **Zen Settings → KOReader** (the toggle in **Tools**, the settings in **Settings → Network → MCP server**)
+- Put **Toggle MCP server** on a Controls, Launcher or Navbar button with **Add → Action**, or pick the plugin with **Add → Plugin Menu**
+- Add the **MCP server** item to the status bar (**Zen Settings → Interface → Status bar**). It shows `MCP ☁` when connected through the relay, `MCP …` while connecting, `MCP` in local mode, and hides when the server is stopped
+
 ### Connecting an AI Assistant
 
 Check the **MCP server status** in the Tools menu for the MCP server address. Use this address to configure your AI assistant or MCP client (e.g., Claude or Gemini).

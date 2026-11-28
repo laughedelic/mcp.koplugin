@@ -31,6 +31,8 @@ local MCPResources = require("mcp_resources")
 local MCPTools = require("mcp_tools")
 local MCPPrompts = require("mcp_prompts")
 local MCPRelay = require("mcp_relay")
+local MCPZenOS = require("mcp_zenos")
+local Dispatcher = require("dispatcher")
 
 -- Module-level state to persist across plugin instance recreation
 -- (when switching between file browser and reader)
@@ -199,6 +201,60 @@ function MCP:init()
 
     -- Add menu item
     self.ui.menu:registerToMainMenu(self)
+
+    -- Actions for gestures (and, under ZenOS, Controls, Launcher and Navbar)
+    self:onDispatcherRegisterActions()
+
+    -- ZenOS status bar item (no-op on plain KOReader)
+    MCPZenOS.registerStatusItem(function()
+        local text = MCP:getStatusText()
+        if text then
+            return nil, text -- ZenOS expects icon, label
+        end
+    end)
+end
+
+function MCP:onDispatcherRegisterActions()
+    Dispatcher:registerAction("mcp_toggle_server", {
+        category = "none",
+        event = "ToggleMCPServer",
+        title = _("Toggle MCP server"),
+        general = true,
+    })
+    Dispatcher:registerAction("mcp_server_details", {
+        category = "none",
+        event = "ShowMCPServerDetails",
+        title = _("MCP server details"),
+        general = true,
+    })
+end
+
+function MCP:onToggleMCPServer()
+    if shared_state.server_running then
+        self:stopServer()
+    else
+        self:startServer()
+    end
+    return true
+end
+
+function MCP:onShowMCPServerDetails()
+    self:showServerDetails()
+    return true
+end
+
+-- Short server state for status bars, or nil when the server is stopped
+function MCP:getStatusText()
+    if not shared_state.server_running then
+        return nil
+    end
+    if self:getServerMode() == "remote" then
+        if shared_state.relay_connected then
+            return _("MCP ☁")
+        end
+        return _("MCP …")
+    end
+    return _("MCP")
 end
 
 function MCP:addToMainMenu(menu_items)
@@ -295,6 +351,7 @@ function MCP:ensureRelayDeviceId()
 end
 
 function MCP:refreshSettingsMenu(touchmenu_instance)
+    MCPZenOS.refresh()
     if touchmenu_instance then
         shared_state.settings_menu_instance = touchmenu_instance
     end
@@ -720,6 +777,7 @@ function MCP:startLocalServer(silent)
 
     shared_state.server_running = true
     shared_state.local_http_running = true
+    MCPZenOS.refresh()
     shared_state.last_interaction_time = os.time()
 
     -- Start polling for requests
@@ -792,6 +850,8 @@ function MCP:stopServer()
     self:cancelIdleWarning()
     self:cancelResourceCheck()
     shared_state.last_interaction_time = nil
+
+    MCPZenOS.refresh()
 
     UIManager:show(Notification:new {
         text = _("MCP server stopped"),
@@ -882,6 +942,7 @@ function MCP:startRelay(show_notification)
     if success then
         shared_state.server_running = true
         shared_state.relay_running = true
+        MCPZenOS.refresh()
         shared_state.last_interaction_time = os.time()
 
         -- Start idle timeout checking
