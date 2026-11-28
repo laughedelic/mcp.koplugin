@@ -965,6 +965,10 @@ function MCPRelay:register(callback)
             end
         end
 
+        -- Relays that support one-time pairing codes say so; older ones
+        -- still sign clients in with the device ID and passcode
+        self.pairing_codes_supported = data.pairingCodesSupported == true
+
         -- Save the public URL and token endpoint
         self.public_url = data.relayUrl or (self.relay_url .. "/mcp")
         self.token_endpoint = data.tokenEndpoint or (self.relay_url .. "/oauth/token")
@@ -1002,6 +1006,58 @@ function MCPRelay:register(callback)
             callback(true)
         end
     end, self:getDeviceHeaders())
+end
+
+-- Call a device endpoint of the relay that answers JSON
+-- callback(ok, data_or_error_message)
+function MCPRelay:deviceApiRequest(method, path, body, callback)
+    if not self.connected or not self.device_id or not self.device_secret then
+        callback(false, "The cloud relay is not connected.")
+        return
+    end
+    self:httpRequest(self.relay_url .. path, method, body, function(response)
+        if not response or not response.code then
+            callback(false, "Couldn't reach the relay: " .. tostring(response and response.error or "no response"))
+            return
+        end
+        local ok, data = pcall(json.decode, response.body or "")
+        if not ok or type(data) ~= "table" then
+            data = nil
+        end
+        if response.code ~= 200 then
+            local message = data and data.error or ("Relay error " .. tostring(response.code))
+            if type(message) == "table" then
+                message = message.message or ("Relay error " .. tostring(response.code))
+            end
+            callback(false, tostring(message))
+            return
+        end
+        if not data then
+            callback(false, "Invalid response from the relay")
+            return
+        end
+        callback(true, data)
+    end, self:getDeviceHeaders())
+end
+
+-- Ask the relay for a one-time pairing code (6 digits, single use, short-lived)
+-- callback(ok, {code, expiresIn, relayUrl} or error message)
+function MCPRelay:requestPairingCode(callback)
+    self:deviceApiRequest("POST", "/pairing-code", "{}", callback)
+end
+
+-- List the AI apps (OAuth grants) connected to this device
+-- callback(ok, {apps = {{id, name, connectedAt}, ...}} or error message)
+function MCPRelay:listConnectedApps(callback)
+    self:deviceApiRequest("GET", "/connected-apps", nil, callback)
+end
+
+-- Disconnect an AI app: revokes its grant and tokens at the relay
+function MCPRelay:disconnectApp(app_id, callback)
+    local escaped = tostring(app_id):gsub("[^%w%-_%.~]", function(c)
+        return string.format("%%%02X", string.byte(c))
+    end)
+    self:deviceApiRequest("DELETE", "/connected-apps/" .. escaped, nil, callback)
 end
 
 -- Poll for incoming requests
