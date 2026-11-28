@@ -1,0 +1,53 @@
+name: E2E
+
+# Runs the plugin inside a real (desktop Linux) KOReader and calls it over MCP.
+# See test/e2e/README.md.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      relay_ref:
+        description: Relay branch or commit to test through
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  koreader:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the relay
+        uses: actions/checkout@v4
+        with:
+          repository: laughedelic/koreader-mcp-cloud-relay
+          ref: ${{ inputs.relay_ref || 'main' }}
+          path: .e2e/relay
+      - uses: oven-sh/setup-bun@v2
+      - name: Install Xvfb and ImageMagick
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb imagemagick
+      - name: Cache KOReader
+        uses: actions/cache@v4
+        with:
+          path: .e2e/koreader-*
+          key: koreader-${{ hashFiles('test/e2e/run.sh') }}
+      - name: Run the e2e tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELAY_DIR: .e2e/relay
+        run: test/e2e/run.sh
+      - name: Upload logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: |
+            .e2e/*.log
+            .e2e/*.png
+            .e2e/books/*.sdr/
+          if-no-files-found: ignore

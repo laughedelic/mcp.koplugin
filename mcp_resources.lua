@@ -263,7 +263,7 @@ end
 function MCPResources:getReadingContext()
     local doc = self.ui.document
     local props = doc:getProps()
-    local current_page = doc:getCurrentPage()
+    local current_page = self.ui:getCurrentPage()
     local page_count = doc:getPageCount()
 
     -- Build context object with sections:
@@ -445,7 +445,7 @@ function MCPResources:getMetadata()
     local doc_settings = DocSettings:open(doc.file)
     if doc_settings then
         data.percent_finished = doc_settings:readSetting("percent_finished") or 0
-        data.current_page = doc_settings:readSetting("last_page") or doc:getCurrentPage()
+        data.current_page = doc_settings:readSetting("last_page") or self.ui:getCurrentPage()
     end
 
     return {
@@ -840,7 +840,7 @@ function MCPResources:checkForChanges()
     end
 
     -- Check page change
-    local current_page = self.ui.document:getCurrentPage()
+    local current_page = self.ui:getCurrentPage()
     if current_page ~= self._cache.current_page then
         self._cache.current_page = current_page
         if self.subscriptions["book://current/context"] then
