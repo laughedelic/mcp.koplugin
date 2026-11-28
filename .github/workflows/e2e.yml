@@ -22,11 +22,28 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      # A change that spans both repositories uses the same branch name in
+      # each, so test against the relay branch of that name when there is one
+      - name: Pick the relay branch
+        id: relay
+        env:
+          WANTED: ${{ inputs.relay_ref }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          ref="$WANTED"
+          if [ -z "$ref" ]; then
+            ref=main
+            if git ls-remote --exit-code --heads https://github.com/laughedelic/koreader-mcp-cloud-relay "refs/heads/$BRANCH" >/dev/null; then
+              ref="$BRANCH"
+            fi
+          fi
+          echo "Testing through the relay's $ref branch"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - name: Check out the relay
         uses: actions/checkout@v4
         with:
           repository: laughedelic/koreader-mcp-cloud-relay
-          ref: ${{ inputs.relay_ref || 'main' }}
+          ref: ${{ steps.relay.outputs.ref }}
           path: .e2e/relay
       - uses: oven-sh/setup-bun@v2
       - name: Install Xvfb and ImageMagick

@@ -21,7 +21,9 @@ downloads KOReader into `.e2e/` (set `KOREADER_VERSION` for another release);
 logs, screenshots and the books' sidecar folders end up there too.
 
 CI runs all of it on every pull request (`.github/workflows/e2e.yml`), against
-the relay's `main` branch, or another branch when started by hand.
+the relay branch with the same name as the pull request's branch if there is
+one, otherwise the relay's `main` branch, or the branch named when started by
+hand.
 
 ## What happens
 
@@ -40,6 +42,14 @@ the relay's `main` branch, or another branch when started by hand.
    preset device ID and secret, the test gets a pairing code with that secret,
    connects an app through OAuth (dynamic registration, pairing code, PKCE)
    and runs the main tool calls through the relay.
+
+6. Offline memory suite (EPUB and PDF, `--only memory`): the plugin starts in
+   remote mode with offline memory set to save nearby pages, an app pairs,
+   adds a note and turns the page, and the test waits for the plugin's
+   snapshot to reach the relay. Then KOReader quits and the same app asks
+   again: the answers must come from the saved copy, with the page text the
+   reader returned while it was running. Skipped when the relay has no
+   offline memory.
 
 ## What this can't test
 

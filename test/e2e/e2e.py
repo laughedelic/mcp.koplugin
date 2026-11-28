@@ -420,7 +420,7 @@ def run_suite(name, book, args, work):
 # Through a relay (a local `wrangler dev` of koreader-mcp-cloud-relay)
 # --------------------------------------------------------------------------
 
-def relay_settings(relay, device_id, secret):
+def relay_settings(relay, device_id, secret, extra=""):
     return f"""return {{
     ["mcp_server_autostart"] = true,
     ["mcp_server_mode"] = "remote",
@@ -431,11 +431,11 @@ def relay_settings(relay, device_id, secret):
     ["mcp_relay_passcode"] = "246810",
     ["mcp_relay_device_secret"] = "{secret}",
     ["mcp_relay_device_name"] = "e2e reader",
-}}
+{extra}}}
 """
 
 
-def relay_request(relay, path, data=None, headers=None, form=False):
+def relay_request(relay, path, data=None, headers=None, form=False, method=None):
     """Returns (status, headers, body text). Doesn't follow redirects."""
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *a, **k):
@@ -444,7 +444,8 @@ def relay_request(relay, path, data=None, headers=None, form=False):
     body = None
     if data is not None:
         body = urllib.parse.urlencode(data).encode() if form else json.dumps(data).encode()
-    req = urllib.request.Request(relay + path, data=body, method="POST" if body is not None else "GET")
+    req = urllib.request.Request(relay + path, data=body,
+                                 method=method or ("POST" if body is not None else "GET"))
     if body is not None:
         req.add_header("Content-Type", "application/x-www-form-urlencoded" if form else "application/json")
     for k, v in (headers or {}).items():
@@ -555,12 +556,172 @@ def run_relay_suite(relay, book, args, work):
     return failures
 
 
+# --------------------------------------------------------------------------
+# Offline memory: the relay answers from a saved copy once KOReader is gone
+# --------------------------------------------------------------------------
+
+MEMORY_SETTINGS = """    ["mcp_memory_scope"] = "pages",
+    ["mcp_memory_retention_days"] = 7,
+"""
+MEMORY_PAGE = 2
+SAVED_COPY = "[Reader offline: answering from a saved copy]"
+
+
+def run_memory_suite(relay, book, kind, args, work):
+    """Turn offline memory on, read and annotate through the relay, wait for
+    the plugin to save its snapshot, quit KOReader and ask again."""
+    name = f"memory-{kind}"
+    print(f"\n== {name}: {book.name}, offline memory through {relay}")
+    sdr = book.with_suffix(".sdr")
+    if sdr.exists():
+        shutil.rmtree(sdr)
+    device_id = "e2e-" + os.urandom(4).hex()
+    secret = b64url(os.urandom(32))
+    device_headers = {"X-Device-Id": device_id, "Authorization": "Device " + secret}
+    ko = KOReader(args.koreader, args.plugin, work, name,
+                  relay_settings(relay, device_id, secret, MEMORY_SETTINGS))
+    failures = []
+    pairing = {}
+
+    def registered():
+        st, _, body = relay_request(relay, "/pairing-code", {}, device_headers)
+        if st == 200:
+            pairing["code"] = json.loads(body)["code"]
+            return True
+        return False
+
+    def saved():
+        st, _, body = relay_request(relay, "/snapshot", headers=device_headers)
+        return json.loads(body) if st == 200 else None
+
+    def step(label, fn):
+        try:
+            fn()
+            print(f"   ok    {label}")
+            return True
+        except Exception as e:  # noqa: BLE001
+            failures.append(label)
+            print(f"   FAIL  {label}: {e}")
+            if os.environ.get("E2E_VERBOSE"):
+                traceback.print_exc()
+            return False
+
+    live = {}
+
+    def read_live():
+        call_tool("annotate", {"text": RABBIT, "note": NOTE, "note_format": "markdown"})
+        live["before"] = time.time() * 1000
+        text, _ = call_tool("goto_page", {"page": MEMORY_PAGE})
+        contains(text, f"Navigated to page {MEMORY_PAGE}", "goto_page")
+        live["at"] = time.time() * 1000
+        text, _ = call_tool("read_pages", {"pages": str(MEMORY_PAGE)})
+        assert SAVED_COPY not in text, "the reader is running, but the answer came from the saved copy"
+        # A stretch from the middle of the page, to look for in the saved copy
+        words = text.split()
+        assert len(words) > 40, f"page {MEMORY_PAGE} has too little text: {text[:300]}"
+        live["words"] = " ".join(words[len(words) // 2:len(words) // 2 + 8])
+
+    def wait_saved():
+        # The plugin saves a few seconds after an app connects, and after a
+        # change within about a minute. A save that arrived while goto_page
+        # was on its way may or may not hold the new page: wait for a later
+        # one, and if none comes the reader had nothing more to say.
+        deadline = time.time() + 75
+        info = None
+        while True:
+            info = saved()
+            fresh = info and info.get("stored") and info.get("apps", 0) >= 1
+            if fresh and info.get("receivedAt", 0) >= live["at"]:
+                break
+            if time.time() > deadline:
+                if fresh and info.get("receivedAt", 0) >= live["before"]:
+                    break
+                raise AssertionError(f"no snapshot since the page change after 75s; the relay has: {info}")
+            time.sleep(2)
+        assert info.get("scope") == "pages", info
+        live["bytes"] = info.get("bytes")
+
+    def offline_context():
+        # A reader that quits without a word is noticed within about 30 seconds
+        text, _ = call_tool("get_reading_context", timeout=60)
+        contains(text, SAVED_COPY, "get_reading_context")
+        contains(text, "Alice", "get_reading_context")
+        contains(text, "The saved copy holds the text of page", "get_reading_context")
+        assert re.search(rf"\bpage\W+{MEMORY_PAGE}\b", text, re.I), f"page {MEMORY_PAGE} not named in:\n{text[:1500]}"
+
+    def offline_pages():
+        text, _ = call_tool("read_pages", {"pages": str(MEMORY_PAGE)})
+        contains(text, SAVED_COPY, "read_pages")
+        contains(" ".join(text.split()), live["words"], "read_pages from the saved copy")
+
+    def offline_metadata():
+        text, _ = call_tool("get_book_metadata")
+        contains(text, SAVED_COPY, "get_book_metadata")
+        contains(text, "Carroll", "get_book_metadata")
+
+    def offline_notes():
+        text, _ = call_tool("search_book", {"query": "White Rabbit"})
+        contains(text, SAVED_COPY, "search_book")
+        contains(text, NOTE, "search_book (the note)")
+
+    def offline_write_refused():
+        text, _ = call_tool("goto_page", {"page": 1})
+        contains(text, "[Reader offline]", "goto_page")
+
+    def forget():
+        st, _, body = relay_request(relay, "/snapshot", headers=device_headers, method="DELETE")
+        assert st == 200 and json.loads(body).get("deleted") is True, (st, body)
+        text, _ = call_tool("get_reading_context")
+        assert SAVED_COPY not in text, "still answered from the saved copy after deleting it"
+        contains(text, "[Reader offline]", "get_reading_context after deleting")
+
+    stopped = False
+    try:
+        t0 = time.time()
+        ko.start(book, ready=registered)
+        print(f"   KOReader up, registered with the relay ({time.time() - t0:.1f}s)")
+        if saved() is None:
+            print("   skip  this relay has no offline memory (older relay, or turned off)")
+            return []
+        TARGET["url"] = relay + "/mcp"
+        TARGET["token"] = oauth_pair(relay, pairing["code"])
+        if step("read and annotate with the reader running", read_live) and step("snapshot saved", wait_saved):
+            print(f"         ({live['bytes']} bytes on the relay)")
+            ko.stop()
+            stopped = True
+            for label, fn in [("offline: reading context from the saved copy", offline_context),
+                              ("offline: page text matches what the reader returned", offline_pages),
+                              ("offline: book details", offline_metadata),
+                              ("offline: the note is found", offline_notes),
+                              ("offline: goto_page says the reader is offline", offline_write_refused),
+                              ("deleting the saved copy", forget)]:
+                step(label, fn)
+    except Exception as e:  # noqa: BLE001
+        failures.append("startup")
+        print(f"   FAIL  startup: {e}")
+    finally:
+        TARGET["url"], TARGET["token"] = URL, None
+        if not stopped:
+            try:
+                ko.stop()
+            except Exception as e:  # noqa: BLE001
+                failures.append("quit")
+                print(f"   FAIL  quit: {e}")
+    if failures:
+        print(f"   KOReader log: {ko.log_path}")
+        lines = [line for line in ko.log_path.read_text(errors="replace").splitlines()
+                 if "MCP Relay: Poll received" not in line and "MCP Relay: Request req-" not in line
+                 and "MCP Relay: Handling relayed" not in line]
+        print("\n".join("   | " + line for line in lines[-40:]))
+    return failures
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--koreader", required=True, help="directory with KOReader's reader.lua")
     p.add_argument("--plugin", required=True, help="plugin directory (the repository root)")
     p.add_argument("--work", required=True, help="scratch directory for books, homes and logs")
-    p.add_argument("--only", choices=sorted(SUITES) + ["relay"])
+    p.add_argument("--only", choices=sorted(SUITES) + ["relay", "memory"])
     p.add_argument("--relay", help="also run the relay suite against this relay URL (e.g. http://127.0.0.1:8787)")
     p.add_argument("--keep-running", action="store_true", help="leave KOReader up after the tests until Enter")
     args = p.parse_args()
@@ -570,12 +731,17 @@ def main():
     subprocess.run([sys.executable, str(HERE / "make_books.py"), str(books)], check=True, stdout=subprocess.DEVNULL)
 
     failed = {}
-    names = [args.only] if args.only else sorted(SUITES) + (["relay"] if args.relay else [])
+    names = [args.only] if args.only else sorted(SUITES) + (["relay", "memory"] if args.relay else [])
     for name in names:
+        if name in ("relay", "memory") and not args.relay:
+            p.error(f"--only {name} needs --relay URL")
         if name == "relay":
-            if not args.relay:
-                p.error("--only relay needs --relay URL")
             f = run_relay_suite(args.relay.rstrip("/"), books / "alice.epub", args, work)
+        elif name == "memory":
+            f = []
+            for kind in sorted(SUITES):
+                f += [f"{kind} {x}" for x in
+                      run_memory_suite(args.relay.rstrip("/"), books / f"alice.{kind}", kind, args, work)]
         else:
             f = run_suite(name, books / f"alice.{name}", args, work)
         if f:

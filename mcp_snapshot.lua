@@ -132,7 +132,7 @@ function Snapshot.build(ui, options)
 
     local props = doc:getProps() or {}
     local page_count = doc:getPageCount() or 0
-    local page = doc:getCurrentPage() or 1
+    local page = ui:getCurrentPage() or 1
 
     local snapshot = {
         v = Snapshot.VERSION,
@@ -329,7 +329,7 @@ function Snapshot.fingerprint(ui, options)
     end
     return table.concat({
         tostring(doc.file),
-        tostring(doc:getCurrentPage()),
+        tostring(ui:getCurrentPage()),
         tostring(doc:getPageCount()),
         tostring(#annotations),
         newest,

@@ -248,6 +248,9 @@ function Memory:warmPageCache(ui, page, page_count)
             local ok, text = pcall(function()
                 return self.tools:getPageTextWithHighlights(number)
             end)
+            if not ok then
+                logger.warn("MCP Memory: Could not read page", number, text)
+            end
             pages[number] = ok and type(text) == "string" and text ~= "" and text or false
         end
     end
@@ -288,8 +291,11 @@ function Memory:push(options)
     if scope == "pages" then
         local doc = ui.document
         local ok, result = pcall(function()
-            return self:warmPageCache(ui, doc:getCurrentPage(), doc:getPageCount())
+            return self:warmPageCache(ui, ui:getCurrentPage(), doc:getPageCount())
         end)
+        if not ok then
+            logger.warn("MCP Memory: Could not read the pages around the current one:", result)
+        end
         complete = ok and result or false
         local cached = self.page_cache and self.page_cache.pages or {}
         build_options.page_text = function(number)
